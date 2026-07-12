@@ -133,8 +133,14 @@ public final class IdleBehaviorManager {
                 }
                 
                 // Route through AIActionBridge to use standard systems
-                OllamaNetworkClient.AIDecision dec = new OllamaNetworkClient.AIDecision(chatMsg, "mine " + target);
-                dec.quantity = 2; // only break 2 so it doesn't do it forever
+                OllamaNetworkClient.AIDecision dec = new OllamaNetworkClient.AIDecision(
+                        chatMsg, 
+                        "mine " + target, 
+                        "", 
+                        2, // only break 2 so it doesn't do it forever
+                        "", 
+                        0
+                );
                 AIActionBridge.execute(dec, "System");
             }
         }
