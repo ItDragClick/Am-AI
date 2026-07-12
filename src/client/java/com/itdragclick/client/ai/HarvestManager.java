@@ -82,6 +82,10 @@ public final class HarvestManager {
 			"raw_copper", "stone_pickaxe",
 			"coal", "wooden_pickaxe", "cobblestone", "wooden_pickaxe");
 
+	public static String getRequiredPickaxe(String item) {
+		return REQUIRED_PICKAXE.get(item);
+	}
+
 	public static final int DEFAULT_BLOCK_TARGET = 16;
 	public static final int DEFAULT_MOB_DROP_TARGET = 3;
 	private static final double DELIVERY_RADIUS = 2.0;

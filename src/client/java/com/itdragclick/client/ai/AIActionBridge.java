@@ -26,7 +26,7 @@ public final class AIActionBridge {
 	public static final java.util.Set<String> ALLOWED_VERBS = java.util.Set.of(
 			"goto", "mine", "mine_area", "follow", "follow_protect", "attack", "eat",
 			"drop_items", "deposit_chest", "farm", "sneak", "unsneak", "click_respawn",
-			"cancel", "stop", "equip", "sleep", "leave_bed");
+			"cancel", "stop", "equip", "sleep", "leave_bed", "craft");
 
 	/** Verbs small models substitute for "attack" when told to kill things. */
 	private static final java.util.Set<String> ATTACK_ALIASES = java.util.Set.of(
@@ -244,6 +244,19 @@ public final class AIActionBridge {
 			case "sneak" -> setSneaking(true);
 			case "unsneak" -> setSneaking(false);
 			case "eat" -> SurvivalMonitor.requestEat();
+			case "craft" -> {
+				String raw = argOr(tokens, decision.target());
+				if (raw == null) {
+					AIDashboardFrame.appendSystemLog("[WARN] craft needs an item — ignored.");
+					return;
+				}
+				String resolved = RegistryResolver.resolveItem(raw);
+				if (CraftPlanner.canPlan(resolved)) {
+					CraftPlanner.start(resolved, senderName, true);
+				} else {
+					AIDashboardFrame.appendSystemLog("[WARN] Don't know how to craft '" + resolved + "'.");
+				}
+			}
 			case "equip" -> {
 				Minecraft mc = Minecraft.getInstance();
 				if (mc.player != null) {
