@@ -45,6 +45,21 @@ public final class IdleBehaviorManager {
             actionCooldown--;
         }
 
+        // 0.1% chance per tick to initiate a random player interaction
+        if (Math.random() < 0.001 && !PlayerInteractionManager.isActive()) {
+            List<Entity> players = mc.level.getEntities(player, player.getBoundingBox().inflate(15.0), e -> e instanceof net.minecraft.world.entity.player.Player);
+            if (!players.isEmpty()) {
+                Entity p = players.get((int)(Math.random() * players.size()));
+                PlayerInteractionManager.InteractionType[] types = {
+                    PlayerInteractionManager.InteractionType.INSPECTING, 
+                    PlayerInteractionManager.InteractionType.COPYCAT, 
+                    PlayerInteractionManager.InteractionType.HIDING
+                };
+                PlayerInteractionManager.startInteraction(types[(int)(Math.random() * types.length)], (net.minecraft.world.entity.player.Player) p);
+                return;
+            }
+        }
+
         // Trigger an idle behavior if we've been idle for 5 seconds and cooldown is finished.
         if (idleTicks > 100 && actionCooldown == 0) {
             triggerIdleBehavior(mc, player);

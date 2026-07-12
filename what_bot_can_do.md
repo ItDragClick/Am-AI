@@ -12,9 +12,9 @@ The bot listens to chat messages (prefixed with `!ai` by default, or configurabl
   - `stop`: Immediately halts all current movement and clears the task queue. (Can be explicitly invoked with `!ai stop` to bypass the LLM).
   - `cancel`: Skips the current active task and moves to the next one in the queue.
 
-- **Resource Gathering**
+- **Resource Gathering & Crafting**
   - `mine <block>`: Mines a specified block (defaults to 16 blocks).
-    - *Note:* Features progressive crafting! If the bot needs diamonds but only has wood, it will autonomously craft a wooden pickaxe, mine stone, craft a stone pickaxe, mine iron, smelt it, craft an iron pickaxe, and *then* mine the diamonds.
+  - `craft <item>`: Fully autonomous crafting engine. If you ask for an `iron_sword`, the bot will calculate the recipe recursively (needs iron + sticks), mine wood, craft a table, mine stone, craft a furnace, mine iron, smelt it, and craft the sword! Supported: tools, swords, armor, basics.
   - `mine_area <X1> <Y1> <Z1> <X2> <Y2> <Z2>`: Clears out all blocks within a specified 3D coordinate box.
   - `farm` / `#farm`: Scans an 18-block radius for fully grown crops (wheat, carrots, potatoes, beetroots), harvests them, and automatically replants the seeds.
 
