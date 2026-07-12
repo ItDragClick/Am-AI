@@ -2,6 +2,14 @@
 
 > *A Minecraft Fabric client-side mod bridging an in-game avatar with a locally hosted Large Language Model (llama3.1:8b) via Ollama, orchestrating real-time movement, pathfinding, and world interactions using Baritone.*
 
+## ✨ Key Features (New in v26.2.1!)
+- **Lifelike Idle Behaviors**: Bot gets bored when idle and will autonomously explore, touch grass, pick flowers, stare at animals, or complain about being tired at night and seek out a bed to sleep in.
+- **Affinity & Grudges**: Remembers how you treat it. Affinities range from Hatred to Love. It will brutally mock players it hates when they die, hold a grudge if you kill it, and drop spontaneous gifts at the feet of players it loves.
+- **Survival Instincts**: Automatically eats when hungry or low on health. Eats Golden Apples in critical combat. Swims up for air and breaks ceilings if drowning.
+- **Advanced Control Dashboard**: Features a modern Java Swing UI with smooth animated horizontal page sliding, a live task tracker, and robust Hold-to-Confirm safety buttons to prevent accidental task cancellation or memory wipes.
+
+👉 **Check out the [Full Bot Capabilities Guide (what_bot_can_do.md)](what_bot_can_do.md) for a comprehensive list of all supported commands and behaviors!**
+
 ---
 
 ## ✅ Implementation Status & Code Map (updated 2026-07-12)
