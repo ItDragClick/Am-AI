@@ -1,6 +1,10 @@
 package com.itdragclick.client;
 
 import com.itdragclick.AmAI;
+import com.itdragclick.client.ai.AIStateManager;
+import com.itdragclick.client.ai.AIWhitelistManager;
+import com.itdragclick.client.ai.CraftPlanner;
+import com.itdragclick.client.ai.FarmManager;
 import com.itdragclick.client.ai.HarvestManager;
 import com.itdragclick.client.ai.SurvivalMonitor;
 import com.itdragclick.client.chat.ChatEventListener;
@@ -27,12 +31,19 @@ public class AmAIClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		SettingsPersistenceManager.load();
 		AIMemoryStore.load();
+		AIWhitelistManager.load();
 
 		launchDashboard();
 
 		ChatEventListener.register();
 		SurvivalMonitor.register();
 		HarvestManager.register();
+		AIStateManager.register();
+		FarmManager.register();
+		CraftPlanner.register();
+		com.itdragclick.client.ai.IdleBehaviorManager.register();
+		com.itdragclick.client.ai.ReactiveChatManager.register();
+		com.itdragclick.client.ai.SleepManager.register();
 
 		// Tear the dashboard down with the client so the JVM can exit cleanly.
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> AIDashboardFrame.shutdown());

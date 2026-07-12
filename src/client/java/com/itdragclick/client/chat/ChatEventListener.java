@@ -1,12 +1,16 @@
 package com.itdragclick.client.chat;
 
+import com.itdragclick.client.ai.AIStateManager;
 import com.itdragclick.client.ai.BaritoneBridge;
+import com.itdragclick.client.ai.CraftPlanner;
+import com.itdragclick.client.ai.FarmManager;
 import com.itdragclick.client.ai.HarvestManager;
 import com.itdragclick.client.ai.SurvivalMonitor;
 import com.itdragclick.client.config.AIModSettings;
 import com.itdragclick.client.config.SettingsPersistenceManager;
 import com.itdragclick.client.net.OllamaNetworkClient;
 import com.itdragclick.client.ui.AIDashboardFrame;
+import com.itdragclick.client.memory.AIMemoryStore;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.client.Minecraft;
 
@@ -42,11 +46,51 @@ public final class ChatEventListener {
 			if (overlay) {
 				return;
 			}
-			Matcher m = VANILLA_CHAT.matcher(message.getString());
+			String raw = message.getString();
+			Matcher m = VANILLA_CHAT.matcher(raw);
 			if (m.matches()) {
 				handleIncoming(m.group(1), m.group(2));
+				return;
+			}
+			
+			// Detect death messages (best effort parsing for English locale)
+			// e.g. "Player was slain by Zombie", "am_ai was slain by Player"
+			String lowered = raw.toLowerCase(Locale.ROOT);
+			if (lowered.contains(" was slain by ") || lowered.contains(" fell ") || lowered.contains(" died ") || lowered.contains(" burned ") || lowered.contains(" drowned ") || lowered.contains(" blew up")) {
+				handleDeathMessage(raw);
 			}
 		});
+	}
+
+	private static void handleDeathMessage(String rawMsg) {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.player == null) return;
+		String myName = mc.player.getGameProfile().name();
+		
+		// If the bot was killed by someone
+		if (rawMsg.startsWith(myName + " was slain by ") || rawMsg.startsWith(myName + " was shot by ") || rawMsg.startsWith(myName + " was fireballed by ")) {
+			String killer = rawMsg.substring(rawMsg.indexOf(" by ") + 4).split(" ")[0];
+			// Strip punctuation if any
+			killer = killer.replaceAll("[^a-zA-Z0-9_]", "");
+			if (!killer.isEmpty()) {
+				AIMemoryStore.modifyAffinity(killer, -30);
+				AIDashboardFrame.appendSystemLog("[AFFINITY] " + killer + " killed the bot! Affinity -30.");
+			}
+			return;
+		}
+		
+		// If someone else died
+		if (!rawMsg.startsWith(myName)) {
+			String victim = rawMsg.split(" ")[0];
+			victim = victim.replaceAll("[^a-zA-Z0-9_]", "");
+			if (!victim.isEmpty()) {
+				int affinity = AIMemoryStore.getAffinity(victim);
+				String tone = affinity < 0 ? "mock and insult them brutally" : "act surprised or laugh";
+				String prompt = "[SYSTEM: " + rawMsg + "! React to this in chat (" + tone + ")]";
+				AIDashboardFrame.appendSystemLog("[REACTIVE] Death detected: " + rawMsg);
+				OllamaNetworkClient.submitPrompt(OllamaNetworkClient.Source.IN_GAME, "System", prompt);
+			}
+		}
 	}
 
 	private static void handleIncoming(String senderName, String rawText) {
@@ -86,19 +130,45 @@ public final class ChatEventListener {
 
 		// Absolute cancellation override: "!AI stop" / "!AI stop follow" from
 		// an approved player bypasses the LLM entirely — a stop request must
-		// never get trapped in a conversational round-trip.
+		// never get trapped in a conversational round-trip. Wipes the whole
+		// LIFO task stack too.
 		String lowered = prompt.toLowerCase(Locale.ROOT);
 		if ((lowered.equals("stop") || lowered.startsWith("stop ")) && SurvivalMonitor.isFriendly(who)) {
 			AIDashboardFrame.appendSystemLog("[OVERRIDE] Immediate stop from " + who + " — LLM bypassed.");
 			mc.execute(() -> {
+				AIStateManager.clearAll();
 				BaritoneBridge.hardStop();
 				HarvestManager.cancel();
+				FarmManager.cancel();
+				CraftPlanner.cancel();
 				SurvivalMonitor.clearAllOrders();
 			});
 			return;
 		}
 
+		// Soft cancel: drop only the current task, keep the queued stack.
+		if (lowered.equals("cancel") && SurvivalMonitor.isFriendly(who)) {
+			AIDashboardFrame.appendSystemLog("[OVERRIDE] Cancel current task from " + who + " — LLM bypassed.");
+			mc.execute(AIStateManager::cancelCurrent);
+			return;
+		}
+
+		// Whitelist edits are dashboard-only (security): in-game chat can be
+		// spoofed/relayed, so refuse and say where to do it.
+		if (lowered.startsWith("whitelist")) {
+			AIDashboardFrame.appendSystemLog("[WHITELIST] In-game edit refused (" + who
+					+ ") — whitelist changes are only allowed from the desktop dashboard.");
+			mc.execute(() -> sendChat(mc, "Whitelist changes only work from my dashboard, sorry!"));
+			return;
+		}
+
 		AIDashboardFrame.appendSystemLog("[CHAT] Task request from " + who + ": " + prompt);
 		OllamaNetworkClient.submitPrompt(OllamaNetworkClient.Source.IN_GAME, who, prompt);
+	}
+
+	private static void sendChat(Minecraft mc, String message) {
+		if (mc.getConnection() != null) {
+			mc.getConnection().sendChat(message.length() > 100 ? message.substring(0, 100) : message);
+		}
 	}
 }

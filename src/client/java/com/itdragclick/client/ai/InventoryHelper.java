@@ -36,6 +36,10 @@ public final class InventoryHelper {
 		return BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
 	}
 
+	public static boolean isLog(ItemStack stack) {
+		return !stack.isEmpty() && itemIdOf(stack).endsWith("_log");
+	}
+
 	public static int countItem(LocalPlayer player, String itemId) {
 		int total = 0;
 		for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
@@ -65,6 +69,15 @@ public final class InventoryHelper {
 				}
 			}
 		}
+
+		String priority = com.itdragclick.client.config.SettingsPersistenceManager.get().weaponPriority;
+		String id = itemIdOf(stack);
+		if ("Swords".equalsIgnoreCase(priority) && id.endsWith("_sword")) {
+			damage += 5.0; // Artificial boost to always pick swords
+		} else if ("Axes".equalsIgnoreCase(priority) && id.endsWith("_axe")) {
+			damage += 5.0; // Artificial boost to always pick axes
+		}
+
 		return 1.0 + damage;
 	}
 
@@ -144,38 +157,92 @@ public final class InventoryHelper {
 	 * whole stack at the bot's feet so nearby players can pick it up.
 	 * Returns the number of items dropped.
 	 */
-	public static int dropAllOf(Minecraft mc, LocalPlayer player, String rawItemId) {
+	private static final java.util.Queue<DropAction> dropQueue = new java.util.LinkedList<>();
+	private static int dropDelayCounter = 0;
+
+	private record DropAction(int slot, boolean dropWholeStack) {}
+
+	public static void tickDrops(Minecraft mc, LocalPlayer player) {
+		if (dropQueue.isEmpty()) {
+			return;
+		}
+		if (dropDelayCounter > 0) {
+			dropDelayCounter--;
+			return;
+		}
+		dropDelayCounter = 5; // 250ms delay between drops
+		DropAction action = dropQueue.poll();
+		int menuSlot = action.slot < 9 ? 36 + action.slot : action.slot;
+		int button = action.dropWholeStack ? 1 : 0; // 0 = 1 item, 1 = whole stack
+		mc.gameMode.handleContainerInput(player.inventoryMenu.containerId, menuSlot, button, ContainerInput.THROW, player);
+	}
+
+	public static int requestDrop(Minecraft mc, LocalPlayer player, String rawItemId, int quantity) {
 		String itemId = rawItemId.toLowerCase().replace("minecraft:", "").trim();
-		int previousSlot = player.getInventory().getSelectedSlot();
-		int dropped = 0;
-		// Bounded loop: at most 36 stacks can match.
-		for (int pass = 0; pass < 36; pass++) {
-			int found = -1;
-			for (int slot = 0; slot < 36; slot++) {
-				ItemStack stack = player.getInventory().getItem(slot);
-				if (!stack.isEmpty() && itemIdOf(stack).equals(itemId)) {
-					found = slot;
+		int toDrop = quantity <= 0 ? Integer.MAX_VALUE : quantity;
+		int queued = 0;
+		for (int slot = 0; slot < 36; slot++) {
+			ItemStack stack = player.getInventory().getItem(slot);
+			if (!stack.isEmpty() && itemIdOf(stack).equals(itemId)) {
+				int stackCount = stack.getCount();
+				if (toDrop >= stackCount) {
+					dropQueue.add(new DropAction(slot, true));
+					queued += stackCount;
+					toDrop -= stackCount;
+				} else {
+					for (int i = 0; i < toDrop; i++) {
+						dropQueue.add(new DropAction(slot, false));
+					}
+					queued += toDrop;
+					toDrop = 0;
+				}
+				if (toDrop == 0) {
 					break;
 				}
 			}
-			if (found < 0) {
-				break;
-			}
-			int hotbarSlot = found < 9 ? found : FOOD_HOTBAR_SLOT;
-			if (found >= 9) {
-				swapIntoHotbar(mc, player, found, hotbarSlot);
-			}
-			player.getInventory().setSelectedSlot(hotbarSlot);
-			dropped += player.getInventory().getSelectedItem().getCount();
-			// true = drop the entire selected stack, not a single item.
-			player.drop(true);
 		}
-		player.getInventory().setSelectedSlot(previousSlot);
-		if (dropped > 0) {
-			AIDashboardFrame.appendSystemLog("[INVENTORY] Dropped " + dropped + " x '" + itemId + "' at my feet.");
+		if (queued > 0) {
+			if (dropQueue.size() == queued) {
+				dropDelayCounter = 10; // initial delay of 500ms
+			}
+			AIDashboardFrame.appendSystemLog("[INVENTORY] Queued drop of " + queued + " x '" + itemId + "'.");
 		} else {
 			AIDashboardFrame.appendSystemLog("[INVENTORY] No '" + itemId + "' in the inventory to drop.");
 		}
-		return dropped;
+		return queued;
+	}
+
+	public static void equipArmor(Minecraft mc, LocalPlayer player) {
+		int equipped = 0;
+		for (int slot = 0; slot < 36; slot++) {
+			ItemStack stack = player.getInventory().getItem(slot);
+			if (!stack.isEmpty() && stack.has(DataComponents.EQUIPPABLE)) {
+				int menuSlot = slot < 9 ? 36 + slot : slot;
+				mc.gameMode.handleContainerInput(player.inventoryMenu.containerId, menuSlot, 0, ContainerInput.QUICK_MOVE, player);
+				equipped++;
+			}
+		}
+		if (equipped > 0) {
+			AIDashboardFrame.appendSystemLog("[INVENTORY] Equipped " + equipped + " armor pieces.");
+		}
+	}
+
+	public static String getInventorySummary(LocalPlayer player) {
+		java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+		for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+			ItemStack stack = player.getInventory().getItem(i);
+			if (!stack.isEmpty()) {
+				String id = itemIdOf(stack);
+				counts.put(id, counts.getOrDefault(id, 0) + stack.getCount());
+			}
+		}
+		if (counts.isEmpty()) {
+			return "empty";
+		}
+		java.util.List<String> parts = new java.util.ArrayList<>();
+		for (java.util.Map.Entry<String, Integer> e : counts.entrySet()) {
+			parts.add("- " + e.getValue() + " x " + e.getKey());
+		}
+		return "\n" + String.join("\n", parts);
 	}
 }

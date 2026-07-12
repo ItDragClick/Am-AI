@@ -66,6 +66,20 @@ public final class BaritoneBridge {
 		}
 	}
 
+	/** Mine task accepting multiple block ids (any log type, both iron ores). */
+	public static void mineAny(String... blockIds) {
+		if (!checkPresent("mine " + String.join("/", blockIds))) {
+			return;
+		}
+		try {
+			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			baritone.getMineProcess().mineByName(blockIds);
+			AIDashboardFrame.appendSystemLog("[BARITONE] Mining any of: " + String.join(", ", blockIds));
+		} catch (LinkageError e) {
+			reportObfuscatedJar("mineAny", e);
+		}
+	}
+
 	/**
 	 * Clears every block inside the 3D box spanned by the two corners, using
 	 * Baritone's builder process (the engine behind the "#sel cleararea" box

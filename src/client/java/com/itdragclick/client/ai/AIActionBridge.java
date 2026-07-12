@@ -12,8 +12,11 @@ import java.util.Locale;
  *
  * Decisions arrive on the HTTP worker thread; everything that touches the
  * client, the world, or Baritone is re-scheduled onto the main game thread
- * through {@code Minecraft.getInstance().execute(...)} to avoid
- * ConcurrentModificationException-class race conditions.
+ * through {@code Minecraft.getInstance().execute(...)}.
+ *
+ * Extended schema: the verb may carry inline args ("goto 10 64 10") OR pull
+ * them from the decision's structured fields (target / quantity /
+ * chest_coords) — both forms are accepted, inline args win.
  */
 public final class AIActionBridge {
 
@@ -21,8 +24,9 @@ public final class AIActionBridge {
 
 	/** The full legal action grammar — anything else is model hallucination. */
 	public static final java.util.Set<String> ALLOWED_VERBS = java.util.Set.of(
-			"goto", "mine", "mine_area", "follow", "attack", "eat", "drop_items",
-			"deposit_chest", "sneak", "unsneak", "click_respawn", "stop");
+			"goto", "mine", "mine_area", "follow", "follow_protect", "attack", "eat",
+			"drop_items", "deposit_chest", "farm", "sneak", "unsneak", "click_respawn",
+			"cancel", "stop", "equip", "sleep", "leave_bed");
 
 	/** Verbs small models substitute for "attack" when told to kill things. */
 	private static final java.util.Set<String> ATTACK_ALIASES = java.util.Set.of(
@@ -32,15 +36,13 @@ public final class AIActionBridge {
 	}
 
 	/**
-	 * Normalizes a raw LLM action into the legal grammar, rescuing common
-	 * small-model hallucinations instead of dropping them:
-	 *   "mine_pigs" / "kill_pig" / "hunt pigs"  -> "attack pig"
-	 *   "kill pig" / "slay cow"                 -> "attack pig" / "attack cow"
-	 *   "mine pig" (mob given to mine)          -> "attack pig"
-	 *   "attack Pigs"                           -> "attack pig" (singular)
-	 * Returns "" for blank/chat-only, null when nothing legal can be made.
-	 * Pure string function — safe on any thread, also used before actions are
-	 * recorded into the memory bank so hallucinations never poison recall.
+	 * Normalizes a raw LLM action verb into the legal grammar, rescuing
+	 * common small-model hallucinations instead of dropping them
+	 * ("mine_pigs" -> "attack pig", "#farm" -> "farm", "kill pig" ->
+	 * "attack pig", plurals singularized). Returns "" for blank/chat-only,
+	 * null when nothing legal can be made. Pure string function — safe on
+	 * any thread, also used before actions are recorded into the memory
+	 * bank so hallucinations never poison recall.
 	 */
 	public static String canonicalizeAction(String action) {
 		if (action == null || action.isBlank()) {
@@ -48,14 +50,17 @@ public final class AIActionBridge {
 		}
 		String[] tokens = action.strip().split("\\s+");
 		String verb = tokens[0].toLowerCase(Locale.ROOT);
+		if (verb.startsWith("#")) {
+			verb = verb.substring(1);
+		}
 
 		if (ATTACK_ALIASES.contains(verb)) {
 			verb = "attack";
 		}
 
-		// Fused hallucinations like "mine_pigs" / "attack_pig" / "kill_cow":
-		// any underscore-joined word (that isn't a real verb) hiding a known
-		// mob name becomes a proper attack order.
+		// Fused hallucinations like "mine_pigs" / "kill_cow": any
+		// underscore-joined word (that isn't a real verb) hiding a known mob
+		// name becomes a proper attack order.
 		if (!ALLOWED_VERBS.contains(verb) && verb.contains("_")) {
 			for (String part : verb.split("_")) {
 				if (HarvestManager.MOB_DROPS.containsKey(singular(part))) {
@@ -89,8 +94,7 @@ public final class AIActionBridge {
 
 	/**
 	 * @param senderName the player whose chat request produced this decision;
-	 *                   used to resolve placeholder targets the LLM failed to
-	 *                   substitute (e.g. "follow &lt;player_name&gt;").
+	 *                   used for delivery targets and placeholder rescue.
 	 */
 	public static void execute(AIDecision decision, String senderName) {
 		Minecraft mc = Minecraft.getInstance();
@@ -101,7 +105,7 @@ public final class AIActionBridge {
 			}
 			try {
 				sendChat(mc, decision.chat());
-				runAction(decision.action(), senderName);
+				runAction(decision, senderName);
 			} catch (Exception e) {
 				AmAI.LOGGER.error("[am-ai] Action execution failed, stopping Baritone for safety", e);
 				AIDashboardFrame.appendSystemLog("[ERROR] Action failed (" + e.getMessage() + ") — issuing stop.");
@@ -127,47 +131,54 @@ public final class AIActionBridge {
 		mc.getConnection().sendChat(trimmed);
 	}
 
-	/**
-	 * Maps the action grammar onto the Baritone bridge and survival monitor:
-	 * goto / mine / mine_area / follow / attack / eat / click_respawn / stop.
-	 */
-	private static void runAction(String rawAction, String senderName) {
-		String action = canonicalizeAction(rawAction);
+	private static void runAction(AIDecision decision, String senderName) {
+		String action = canonicalizeAction(decision.action());
 		if (action == null) {
-			AIDashboardFrame.appendSystemLog("[WARN] Unrecoverable action '" + rawAction + "' — ignored.");
+			AIDashboardFrame.appendSystemLog("[WARN] Unrecoverable action '" + decision.action() + "' — ignored.");
 			return;
 		}
 		if (action.isBlank()) {
 			return;
 		}
-		if (!action.equals(rawAction)) {
-			AIDashboardFrame.appendSystemLog("[FIX] Rescued hallucinated action '" + rawAction + "' -> '" + action + "'");
+		if (!action.equals(decision.action())) {
+			AIDashboardFrame.appendSystemLog("[FIX] Rescued action '" + decision.action() + "' -> '" + action + "'");
 		}
 		String[] tokens = action.split("\\s+");
 		String verb = tokens[0];
+		int quantity = decision.quantity();
+		int[] chest = parseCoords(decision.chestCoords(), senderName);
 
 		switch (verb) {
 			case "goto" -> {
-				int[] xyz = parseInts(tokens, 1, 3, action);
-				if (xyz != null) {
-					BaritoneBridge.goTo(xyz[0], xyz[1], xyz[2]);
+				// Coordinates can arrive inline, in chest_coords, or in the
+				// target field — models scatter them across all three.
+				int[] dest = tokens.length >= 4 ? parseInts(tokens, 1, 3, action) : null;
+				if (dest == null) {
+					dest = chest;
 				}
-			}
-			case "mine" -> {
-				if (tokens.length < 2) {
-					AIDashboardFrame.appendSystemLog("[WARN] mine needs a block name — stopping.");
-					BaritoneBridge.stop();
+				if (dest == null) {
+					dest = parseCoords(decision.target(), senderName);
+				}
+				if (dest == null) {
+					AIDashboardFrame.appendSystemLog("[WARN] goto without usable coordinates — ignored.");
 					return;
 				}
-				// Route through the multi-step harvest plan: mine until the
-				// quantity target is met, then deliver to the known chest.
-				HarvestManager.startHarvest(tokens[1], senderName);
+				AIStateManager.startGoto(dest[0], dest[1], dest[2], true);
+				AIDashboardFrame.appendSystemLog("[GOTO] Journey to (" + dest[0] + ", " + dest[1] + ", " + dest[2] + ")");
 			}
-			case "deposit_chest" -> {
-				int[] pos = parseInts(tokens, 1, 3, action);
-				if (pos != null) {
-					HarvestManager.depositAtChest(pos[0], pos[1], pos[2]);
+			case "mine" -> {
+				String raw = argOr(tokens, decision.target());
+				if (raw == null) {
+					AIDashboardFrame.appendSystemLog("[WARN] mine needs a block/item — ignored.");
+					return;
 				}
+				String resolved = RegistryResolver.resolveItem(raw);
+				// Progressive crafting: tool requests route to the planner.
+				if (CraftPlanner.canPlan(resolved)) {
+					CraftPlanner.start(resolved, senderName, true);
+					return;
+				}
+				HarvestManager.startHarvest(raw, quantity, senderName, chest, decision.durationSeconds(), true);
 			}
 			case "mine_area" -> {
 				int[] box = parseInts(tokens, 1, 6, action);
@@ -176,46 +187,80 @@ public final class AIActionBridge {
 				}
 			}
 			case "follow" -> {
-				String target = cleanTarget(joinArgs(tokens), senderName);
+				String target = cleanTarget(argOr(tokens, decision.target()), senderName);
 				if (target == null) {
 					AIDashboardFrame.appendSystemLog("[WARN] follow needs a player name — ignored.");
 					return;
 				}
-				BaritoneBridge.follow(target);
+				// Following implies protecting: anyone (non-whitelisted) who
+				// attacks the followed player gets engaged.
+				SurvivalMonitor.requestFollowProtect(target);
+			}
+			case "follow_protect" -> {
+				String target = cleanTarget(argOr(tokens, decision.target()), senderName);
+				if (target == null) {
+					AIDashboardFrame.appendSystemLog("[WARN] follow_protect needs a player name — ignored.");
+					return;
+				}
+				SurvivalMonitor.requestFollowProtect(target);
 			}
 			case "attack" -> {
-				String target = cleanTarget(joinArgs(tokens), senderName);
+				String target = cleanTarget(argOr(tokens, decision.target()), senderName);
 				if (target == null) {
 					AIDashboardFrame.appendSystemLog("[WARN] attack needs a target name — ignored.");
 					return;
 				}
 				// Porkchop Workflow: attacking a farm animal means the player
 				// wants its drops — run the full hunt->return->deliver chain.
-				String mob = target.toLowerCase(Locale.ROOT).replaceAll("s$", "");
+				String mob = singular(target.toLowerCase(Locale.ROOT));
 				String drop = HarvestManager.MOB_DROPS.get(mob);
 				if (drop != null && senderName != null) {
-					HarvestManager.startHunt(mob, drop, senderName);
+					HarvestManager.startHunt(mob, drop, quantity, senderName, decision.durationSeconds(), true);
 				} else {
 					SurvivalMonitor.requestAttack(target);
 				}
 			}
 			case "drop_items" -> {
-				if (tokens.length < 2) {
+				String item = argOr(tokens, decision.target());
+				if (item == null) {
 					AIDashboardFrame.appendSystemLog("[WARN] drop_items needs an item id — ignored.");
 					return;
 				}
+				String resolved = RegistryResolver.resolveItem(item);
 				Minecraft mc = Minecraft.getInstance();
-				if (mc.player != null) {
-					InventoryHelper.dropAllOf(mc, mc.player, tokens[1]);
+				if (mc.player != null && resolved != null) {
+					InventoryHelper.requestDrop(mc, mc.player, resolved, decision.quantity());
 				}
 			}
+			case "deposit_chest" -> {
+				int[] pos = tokens.length >= 4 ? parseInts(tokens, 1, 3, action) : chest;
+				if (pos == null) {
+					AIDashboardFrame.appendSystemLog("[WARN] deposit_chest without coordinates — ignored.");
+					return;
+				}
+				HarvestManager.depositAtChest(pos[0], pos[1], pos[2]);
+			}
+			case "farm" -> FarmManager.start(true, decision.durationSeconds());
 			case "sneak" -> setSneaking(true);
 			case "unsneak" -> setSneaking(false);
 			case "eat" -> SurvivalMonitor.requestEat();
+			case "equip" -> {
+				Minecraft mc = Minecraft.getInstance();
+				if (mc.player != null) {
+					InventoryHelper.equipArmor(mc, mc.player);
+				}
+			}
+			case "sleep" -> SleepManager.startSleep();
+			case "leave_bed" -> SleepManager.leaveBed();
 			case "click_respawn" -> SurvivalMonitor.clickRespawn();
+			case "cancel" -> AIStateManager.cancelCurrent();
 			case "stop" -> {
+				AIStateManager.clearAll();
 				HarvestManager.cancel();
-				BaritoneBridge.stop();
+				FarmManager.cancel();
+				CraftPlanner.cancel();
+				SurvivalMonitor.clearAllOrders();
+				BaritoneBridge.hardStop();
 			}
 			default -> AIDashboardFrame.appendSystemLog("[WARN] Unknown action verb '" + verb + "' — ignored.");
 		}
@@ -228,10 +273,64 @@ public final class AIActionBridge {
 		AIDashboardFrame.appendSystemLog("[MOVE] " + (sneaking ? "Sneaking." : "Stopped sneaking."));
 	}
 
-	/** Joins tokens[1..] into one target string ("iron golem" arrives split). */
-	private static String joinArgs(String[] tokens) {
-		return tokens.length < 2 ? ""
-				: String.join(" ", java.util.Arrays.copyOfRange(tokens, 1, tokens.length));
+	/** Inline action args win; the structured 'target' field is the fallback. */
+	private static String argOr(String[] tokens, String fieldValue) {
+		if (tokens.length >= 2) {
+			return String.join(" ", java.util.Arrays.copyOfRange(tokens, 1, tokens.length));
+		}
+		return fieldValue != null && !fieldValue.isBlank() ? fieldValue : null;
+	}
+
+	/**
+	 * Parses "X Y Z" strings (chest_coords / target fields). Tolerates model
+	 * decorations like "x:-742, y:66, z:692". Also handles "nearby" chest flags.
+	 * Null when unusable.
+	 */
+	private static int[] parseCoords(String coords, String requester) {
+		if (coords == null || coords.isBlank()) {
+			return null;
+		}
+		String mode = coords.trim().toLowerCase(Locale.ROOT);
+		if (mode.startsWith("nearby")) {
+			Minecraft mc = Minecraft.getInstance();
+			if (mc.player == null || mc.level == null) return null;
+			
+			net.minecraft.world.entity.player.Player target = null;
+			if (mode.equals("nearby_player") && requester != null && !requester.isBlank()) {
+				for (net.minecraft.world.entity.Entity entity : mc.level.entitiesForRendering()) {
+					if (entity instanceof net.minecraft.world.entity.player.Player other && other.getName().getString().equalsIgnoreCase(requester)) {
+						target = other;
+						break;
+					}
+				}
+			}
+			net.minecraft.core.BlockPos center = target != null ? target.blockPosition() : mc.player.blockPosition();
+			for (net.minecraft.core.BlockPos p : net.minecraft.core.BlockPos.betweenClosed(center.offset(-10, -5, -10), center.offset(10, 5, 10))) {
+				String name = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(p).getBlock()).getPath();
+				if (name.contains("chest") || name.contains("barrel") || name.contains("shulker_box")) {
+					return new int[]{p.getX(), p.getY(), p.getZ()};
+				}
+			}
+			return null;
+		}
+
+		String[] parts = coords.strip().split("[,\\s]+");
+		int[] out = new int[3];
+		int found = 0;
+		for (String part : parts) {
+			String numeric = part.replaceAll("[^0-9.+-]", "");
+			if (numeric.isEmpty() || numeric.equals("-") || numeric.equals("+")) {
+				continue;
+			}
+			try {
+				out[found++] = (int) Math.floor(Double.parseDouble(numeric));
+				if (found == 3) {
+					return out;
+				}
+			} catch (NumberFormatException ignored) {
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -242,6 +341,9 @@ public final class AIActionBridge {
 	 * player's name. Returns null when no usable target remains.
 	 */
 	private static String cleanTarget(String raw, String senderName) {
+		if (raw == null) {
+			raw = "";
+		}
 		String target = raw.replaceAll("[<>\"'`]", "").strip();
 		// "player/Steve" or "mob/zombie" — keep the part after the slash.
 		int slash = target.lastIndexOf('/');
@@ -254,15 +356,17 @@ public final class AIActionBridge {
 				|| normalized.equals("name") || normalized.equals("player") || normalized.equals("mob")
 				|| normalized.equals("me") || normalized.equals("him") || normalized.equals("her")
 				|| normalized.equals("you") || normalized.equals("target");
-		if (!placeholder) {
-			return target;
+		
+		if (placeholder || target.isEmpty()) {
+			if (senderName != null && !senderName.isBlank()) {
+				AIDashboardFrame.appendSystemLog("[FIX] Missing/placeholder target '" + raw
+						+ "' — using requester '" + senderName + "'.");
+				return senderName;
+			}
+			return null;
 		}
-		if (senderName != null && !senderName.isBlank()) {
-			AIDashboardFrame.appendSystemLog("[FIX] LLM emitted placeholder target '" + raw
-					+ "' — using requester '" + senderName + "'.");
-			return senderName;
-		}
-		return null;
+		
+		return target;
 	}
 
 	/**
@@ -280,7 +384,9 @@ public final class AIActionBridge {
 		int[] out = new int[count];
 		try {
 			for (int i = 0; i < count; i++) {
-				out[i] = (int) Math.floor(Double.parseDouble(tokens[from + i]));
+				// Strip "x:" / "y=" style decorations models attach.
+				String numeric = tokens[from + i].replaceAll("[^0-9.+-]", "");
+				out[i] = (int) Math.floor(Double.parseDouble(numeric));
 			}
 			return out;
 		} catch (NumberFormatException e) {

@@ -50,6 +50,8 @@ public final class AIMemoryStore {
 		List<String> longTermDeclarative = new ArrayList<>();
 		@SerializedName("known_chest")
 		ChestPos knownChest;
+		@SerializedName("player_affinities")
+		java.util.Map<String, Integer> playerAffinities = new java.util.HashMap<>();
 	}
 
 	public static final class Interaction {
@@ -94,6 +96,7 @@ public final class AIMemoryStore {
 				if (loaded != null) {
 					if (loaded.shortTermHistory == null) loaded.shortTermHistory = new ArrayList<>();
 					if (loaded.longTermDeclarative == null) loaded.longTermDeclarative = new ArrayList<>();
+					if (loaded.playerAffinities == null) loaded.playerAffinities = new java.util.HashMap<>();
 					// Scrub previously recorded hallucinated actions
 					// ("mine_pigs") — replaying them in the prompt teaches
 					// the model to repeat its own mistakes forever.
@@ -171,6 +174,43 @@ public final class AIMemoryStore {
 		}
 	}
 
+	// ---------------------------------------------------- feelings/affinities
+
+	public static void modifyAffinity(String player, int amount) {
+		synchronized (LOCK) {
+			int current = data.playerAffinities.getOrDefault(player, 0);
+			int newAffinity = Math.max(-100, Math.min(100, current + amount));
+			data.playerAffinities.put(player, newAffinity);
+			save();
+		}
+	}
+
+	public static int getAffinity(String player) {
+		synchronized (LOCK) {
+			return data.playerAffinities.getOrDefault(player, 0);
+		}
+	}
+
+	// ---------------------------------------------------- dashboard resets
+
+	public static void clearMemories() {
+		synchronized (LOCK) {
+			data.shortTermHistory.clear();
+			data.longTermDeclarative.clear();
+			data.knownChest = null;
+			save();
+			AmAI.LOGGER.info("[am-ai] Memory banks wiped by user.");
+		}
+	}
+
+	public static void clearAffinities() {
+		synchronized (LOCK) {
+			data.playerAffinities.clear();
+			save();
+			AmAI.LOGGER.info("[am-ai] All feelings and affinities reset to neutral.");
+		}
+	}
+
 	// ---------------------------------------------------- prompt injection
 
 	/**
@@ -196,6 +236,17 @@ public final class AIMemoryStore {
 				for (Interaction i : data.shortTermHistory) {
 					sb.append("- ").append(i.player).append(" said \"").append(i.input)
 							.append("\" -> you executed \"").append(i.action).append("\"\n");
+				}
+			}
+			if (!data.playerAffinities.isEmpty()) {
+				sb.append("Your feelings towards players (Affinity scale: -100 to 100):\n");
+				for (java.util.Map.Entry<String, Integer> e : data.playerAffinities.entrySet()) {
+					String mood = "Neutral";
+					if (e.getValue() > 50) mood = "You love them";
+					else if (e.getValue() > 20) mood = "You like them";
+					else if (e.getValue() < -50) mood = "You HATE them";
+					else if (e.getValue() < -20) mood = "You dislike them";
+					sb.append("- ").append(e.getKey()).append(": ").append(e.getValue()).append(" (").append(mood).append(")\n");
 				}
 			}
 			return sb.toString();

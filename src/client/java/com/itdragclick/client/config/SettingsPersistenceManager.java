@@ -73,6 +73,7 @@ public final class SettingsPersistenceManager {
 					if (loaded.endpointUrl == null || loaded.endpointUrl.isBlank()) loaded.endpointUrl = defaults.endpointUrl;
 					if (loaded.modelId == null || loaded.modelId.isBlank()) loaded.modelId = defaults.modelId;
 					if (loaded.commandPrefix == null || loaded.commandPrefix.isBlank()) loaded.commandPrefix = defaults.commandPrefix;
+					if (loaded.weaponPriority == null || loaded.weaponPriority.isBlank()) loaded.weaponPriority = defaults.weaponPriority;
 					settings = loaded;
 				}
 				AmAI.LOGGER.info("[am-ai] Loaded settings from {}", file);

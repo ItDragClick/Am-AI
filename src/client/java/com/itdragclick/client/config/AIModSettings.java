@@ -18,12 +18,16 @@ public class AIModSettings {
 	/** Global on/off switch for the whole pipeline. */
 	public boolean active = true;
 
+	/** Weapon priority mode: "Swords", "Axes", or "Highest Damage". */
+	public String weaponPriority = "Swords";
+
 	public AIModSettings copy() {
 		AIModSettings out = new AIModSettings();
 		out.endpointUrl = endpointUrl;
 		out.modelId = modelId;
 		out.commandPrefix = commandPrefix;
 		out.active = active;
+		out.weaponPriority = weaponPriority;
 		return out;
 	}
 }

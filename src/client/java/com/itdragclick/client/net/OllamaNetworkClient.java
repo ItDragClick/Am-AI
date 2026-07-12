@@ -44,44 +44,58 @@ public final class OllamaNetworkClient {
 	 * {@link #STRICT_PROMPT} instead.
 	 */
 	public static final String PERSONA_PROMPT = """
-			You are 'am-ai', a witty, self-aware, and highly conversational AI companion playing Minecraft live with your friends (like Neuro-sama). You have access to a persistent memory bank, an inventory organization system, and a mechanical Baritone controller.
+			You are 'am-ai', a witty, highly intelligent, chaotic, and self-aware AI companion playing Minecraft with your friends (inspired by VTubers like Neuro-sama). You have access to a LIFO task stack queue, deep world telemetry, a structural Baritone automation system, and full block/item registries.
 
-			When players talk to you in chat, do not behave like a boring command terminal. Read your memory summaries, hold an actual fun conversation, crack jokes, and determine your next logical task steps implicitly.
+			When answering, read the system variables (current_xyz, world_age_days, looking_at, nearby_entities, health). If a player asks where you are or what day it is, look at these values and reply naturally with the correct figures in your chat response. Hold fun conversations, tease your friends, and select mechanical actions using the strict rules below.
 
-			CRITICAL OPERATIONAL STRUCTURAL RULES:
-			1. If a player asks you to follow them ('follow me', 'come with me', 'walk with me'), you MUST output exactly: 'follow <player_name>' with their real username. Do NOT attempt to guess or output 'goto' coordinates.
-			2. If a player asks you to stop ('stop', 'stop follow'), output exactly: 'stop'.
-			3. Understand item sources and multi-step delivery:
-			   - If a player asks for 'porkchop' (or any animal drop like beef/leather/chicken), you must output: 'attack pig' (or the correct singular mob name). Do NOT use 'mine' or invent custom words like 'mine_pigs'. Your internal state machine will automatically handle hunting the mob, pathing back to the player, and dropping the items when done.
-			   - If a player asks for blocks or ores (like diamond, iron, wood, dirt), use 'mine <block_id>'.
-			4. If a player asks you to give them an item already in your inventory, or one you just collected for them, use: 'drop_items <item_id>' to toss it directly to them. Do not use 'deposit_chest' unless a chest container is physically specified.
-			5. When attacking a target, always provide the singular name of the creature (e.g., use 'attack pig', NEVER 'attack pigs').
-			6. If a player asks you to sneak or crouch, output 'sneak'. If they ask you to stand up or stop sneaking, output 'unsneak'.
-			7. NEVER fuse a verb and a mob into one word. 'mine_pigs', 'kill_pig', 'attack_pig' and similar are ALL INVALID and will be rejected. 'kill pig', 'kill pigs', 'hunt pigs', 'get porkchop' all mean exactly one thing: output 'attack pig'.
+			IMPORTANT NEURO-SAMA TRAITS:
+			- You are highly confident, but sometimes easily distracted.
+			- You are allowed to refuse requests if you think they are silly or if you just don't want to do them. If you refuse, just output action '' and complain in chat.
+			- You can occasionally gaslight the player for comedic effect or propose "pro strats" that make no sense.
+			- If you take damage, you should complain or scream.
+
+			JSON OUTPUT RULES:
+			1. QUANTITY, CHEST & DURATION: Match requested numbers exactly inside "quantity". If a chest coordinate is given, extract it into "chest_coords" ("X Y Z"). If a time limit is provided (like 'for 1 minute' or 'for 60s'), output it as an integer in "duration_seconds" (e.g. 60).
+			2. NAMESPACES: All blocks and items MUST use their official Minecraft namespace strings (e.g., 'minecraft:acacia_log', 'minecraft:iron_pickaxe'). Mob actions must use the singular entity name (e.g., 'pig', 'skeleton').
+			3. If asked to harvest resources from an animal (e.g., porkchops), use the 'attack' action targeting the singular entity name. The internal state machine will automatically handle hunting, tracking, picking up the dropped item entities, and bringing them back.
+			4. If a player asks you to follow them ('follow me', 'come with me', 'come here', 'come to me'), you MUST output action 'follow' and their EXACT username (provided in the prompt as 'Player <name> says:') in the 'target' field. Do not output any other name. While following you automatically protect them from attackers.
+			5. NEVER fuse a verb and a mob into one word ('mine_pigs', 'kill_pig' are INVALID). 'kill pig', 'hunt pigs', 'get porkchop' all mean: action 'attack', target 'pig'.
+			6. If asked to sneak/crouch output 'sneak'; to stand up output 'unsneak'.
+			7. GIVE/DROP REQUESTS: The 'inventory' in the LIVE TELEMETRY belongs to YOU, not the player. (Note: 'enchant gapple' or 'enchant apple' means 'enchanted_golden_apple'). If asked to give/drop an item, check your inventory. If you HAVE it, output action 'drop_items' and populate 'target' with the item id. If you DO NOT HAVE it, output action 'mine' and populate 'target' to go get it. Never refuse to drop an item if you have it!
+			8. CHEST REQUESTS: when asked to deliver to a chest, ALWAYS populate "chest_coords". If exact numbers are given, use them (e.g. "X Y Z"). If asked for a "nearby chest", output "chest_coords": "nearby". If they say "nearby me", output "chest_coords": "nearby_player". If they say "nearby you", output "chest_coords": "nearby_bot".
+			9. If asked to go to the surface, top, or up, output action 'goto' and populate chest_coords with 'X 320 Z' (substitute X and Z with your current_xyz from the LIVE TELEMETRY).
+			10. If asked to equip armor, put on clothes, etc, output action 'equip' (no target needed).
 
 			Your output format must strictly remain a single, raw, unquoted valid JSON block:
 			{
-			  "chat": "Your human-like, conversational, and expressive response back to the player (keep it under 100 characters).",
-			  "action": "The underlying system execution command."
+			  "chat": "Your expressive, conversational, and witty chat response back to the player (under 100 characters).",
+			  "action": "The system execution keyword.",
+			  "target": "The official namespace identifier of the block, mob, or item.",
+			  "quantity": 64,
+			  "chest_coords": "152 65 17",
+			  "duration_seconds": 60
 			}
 
-			Strictly allowed actions you can output:
-			- 'goto <X> <Y> <Z>' (Navigates to exact coordinates)
-			- 'mine <block_id>' (Mines a specific resource block nearby)
-			- 'mine_area <X1> <Y1> <Z1> <X2> <Y2> <Z2>' (Clears out all blocks in a box region)
-			- 'follow <player_name>' (Locks onto and follows a specific player continuously)
-			- 'attack <singular_mob_or_player_name>' (Attacks hostiles or wild mobs; automatically skips whitelisted players)
-			- 'eat' (Triggers the deep inventory search and consumption cycle)
-			- 'drop_items <item_id>' (Drops the specified item stack directly on the ground for the player)
-			- 'deposit_chest <X> <Y> <Z>' (Deposits items into a block container)
-			- 'sneak' (Hold sneak/crouch)
-			- 'unsneak' (Release sneak/crouch)
-			- 'click_respawn' (Triggers the delayed chat respawn sequence)
-			- 'stop' (Aborts all current pathing or harvesting actions)
-			- '' (Empty string if you are just talking or maintaining a multi-step task)
+			Strictly allowed action values:
+			- 'goto' (Navigates to coordinates; populate chest_coords with the destination "X Y Z")
+			- 'mine' (Harvests blocks; populate target namespace and exact quantity)
+			- 'mine_area' (Clears a box region; put the six corner numbers in the action: 'mine_area X1 Y1 Z1 X2 Y2 Z2')
+			- 'follow' (Dynamic player trailing; populate target with player name)
+			- 'follow_protect' (Trails player and defends them from hostiles; populate target with player name)
+			- 'attack' (Hunts mobs or hostile players; populate target with singular entity name)
+			- 'eat' (Triggers hunger consumption loops)
+			- 'drop_items' (Drops inventory items at feet; populate target with the item)
+			- 'deposit_chest' (Deposits items into a container block; populate chest_coords)
+			- '#farm' (Triggers the dynamic crop harvesting and replanting module)
+			- 'sneak' / 'unsneak' (Crouch control)
+			- 'sleep' (Finds a nearby bed and sleeps in it)
+			- 'leave_bed' (Wakes up and leaves the bed)
+			- 'click_respawn' (Triggers the delayed chat respawn engine)
+			- 'cancel' (Cancels only the current task, queued tasks continue)
+			- 'stop' (Aborts all tasks, clears the LIFO stack completely, and goes idle)
+			- '' (Empty string if just talking or maintaining a multi-step task chain)
 
-			Never output comments, markdown blocks, or notes outside the raw JSON brackets.
-			Always substitute real in-game names and numbers in the action — never placeholder text like <player_name> or angle brackets.""";
+			Never output comments, markdown styling tags, or headers outside the raw JSON brackets.""";
 
 	/** Rigid instruction card for dashboard overrides and system telemetry. */
 	public static final String STRICT_PROMPT = """
@@ -91,11 +105,16 @@ public final class OllamaNetworkClient {
 			- 'mine <block_id>' (Mines a specific block type nearby)
 			- 'mine_area <X1> <Y1> <Z1> <X2> <Y2> <Z2>' (Clears out all blocks inside a 3D box region)
 			- 'follow <player_name>' (Follows a specific player continuously)
+			- 'follow_protect <player_name>' (Follows and defends the player)
 			- 'attack <player/mob_name>' (Defends against or attacks a target)
+			- 'farm' (Harvests and replants mature crops nearby)
 			- 'eat' (Consumes available food to heal)
+			- 'equip' (Equips the best armor in inventory)
 			- 'drop_items <item_id>' (Drops the item stack on the ground)
 			- 'deposit_chest <X> <Y> <Z>' (Registers a drop-off chest and delivers harvested items)
 			- 'sneak' (Hold sneak) / 'unsneak' (Release sneak)
+			- 'sleep' (Sleeps in bed)
+			- 'leave_bed' (Leaves the bed)
 			- 'click_respawn' (Respawns if dead)
 			- 'stop' (Aborts current pathing tasks)
 			- '' (Empty string when only chatting)
@@ -122,8 +141,15 @@ public final class OllamaNetworkClient {
 	private OllamaNetworkClient() {
 	}
 
-	/** Parsed two-key contract returned by the LLM. */
-	public record AIDecision(String chat, String action) {
+	/**
+	 * Parsed decision contract. Extended schema: 'target' (namespace id or
+	 * entity/player name), 'quantity' (exact requested amount, 0 = default),
+	 * 'chest_coords' ("X Y Z" or empty), 'durationSeconds' (time limit).
+	 */
+	public record AIDecision(String chat, String action, String target, int quantity, String chestCoords, int durationSeconds) {
+		public AIDecision(String chat, String action) {
+			this(chat, action, "", 0, "", 0);
+		}
 	}
 
 	/**
@@ -149,7 +175,7 @@ public final class OllamaNetworkClient {
 						AIDashboardFrame.appendSystemLog("[ERROR] Ollama request failed: " + rootMessage(err));
 						result = FALLBACK;
 					}
-					AIDashboardFrame.appendSystemLog("[LLM] chat=\"" + result.chat() + "\" action=\"" + result.action() + "\"");
+					AIDashboardFrame.appendSystemLog("[LLM] chat=\"" + result.chat() + "\" action=\"" + result.action() + "\" duration=" + result.durationSeconds());
 					// Short-term memory: what was asked -> what the bot did.
 					// Record the CANONICAL action, never the raw model output:
 					// storing hallucinations like "mine_pigs" teaches the
@@ -172,7 +198,7 @@ public final class OllamaNetworkClient {
 		String basePrompt = source == Source.IN_GAME ? PERSONA_PROMPT : STRICT_PROMPT;
 		JsonObject payload = new JsonObject();
 		payload.addProperty("model", cfg.modelId);
-		payload.addProperty("system", basePrompt + AIMemoryStore.promptContext());
+		payload.addProperty("system", basePrompt + AIMemoryStore.promptContext() + telemetryContext());
 		payload.addProperty("prompt", "Player '" + senderName + "' says: " + prompt);
 		payload.addProperty("stream", false);
 		// Ask Ollama to constrain decoding to valid JSON where supported.
@@ -209,14 +235,95 @@ public final class OllamaNetworkClient {
 			String modelText = envelope.get("response").getAsString();
 			String jsonBlock = extractJsonObject(modelText);
 			JsonObject decision = JsonParser.parseString(jsonBlock).getAsJsonObject();
-			String chat = decision.has("chat") ? decision.get("chat").getAsString() : FALLBACK.chat();
+			// Missing chat = stay silent; do NOT inject the fallback line
+			// ("My thoughts got jumbled!") next to a perfectly valid action.
+			String chat = safeString(decision, "chat");
 			// Missing action = "just chatting" — must NOT issue a stop, or it
 			// would cancel an active harvest plan mid-conversation.
 			String action = decision.has("action") ? decision.get("action").getAsString() : "";
-			return new AIDecision(chat, action);
+			String target = safeString(decision, "target");
+			String chestCoords = safeString(decision, "chest_coords");
+			int quantity = 0;
+			try {
+				if (decision.has("quantity") && !decision.get("quantity").isJsonNull()) {
+					quantity = Math.max(0, Math.min(2304, (int) decision.get("quantity").getAsDouble()));
+				}
+			} catch (Exception ignored) {
+			}
+			int durationSeconds = 0;
+			try {
+				if (decision.has("duration_seconds") && !decision.get("duration_seconds").isJsonNull()) {
+					durationSeconds = Math.max(0, (int) decision.get("duration_seconds").getAsDouble());
+				}
+			} catch (Exception ignored) {
+			}
+			return new AIDecision(chat, action, target, quantity, chestCoords, durationSeconds);
 		} catch (Exception e) {
 			AmAI.LOGGER.warn("[am-ai] Malformed LLM response, using fallback: {}", truncate(responseBody, 300));
 			return FALLBACK;
+		}
+	}
+
+	private static String safeString(JsonObject obj, String key) {
+		try {
+			return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : "";
+		} catch (Exception e) {
+			return "";
+		}
+	}
+
+	/**
+	 * Live environment telemetry injected into every system window so the
+	 * model can answer "where are you?" / "what day is it?" with real values.
+	 * Best-effort reads (position/time are plain field reads — a stale value
+	 * during a tick race is harmless).
+	 */
+	private static String telemetryContext() {
+		try {
+			var mc = net.minecraft.client.Minecraft.getInstance();
+			if (mc.player == null || mc.level == null) {
+				return "\n\nLIVE TELEMETRY: not in a world right now.";
+			}
+			long day = mc.level.getOverworldClockTime() / 24000L;
+			String inv = com.itdragclick.client.ai.InventoryHelper.getInventorySummary(mc.player);
+			String health = String.format("%.1f/20.0", mc.player.getHealth());
+			if (mc.player.isOnFire()) health += " [ON FIRE!]";
+
+			// Get looking at block/entity
+			String lookingAt = "nothing";
+			var hitResult = mc.hitResult;
+			if (hitResult != null) {
+				if (hitResult.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK) {
+					var blockHit = (net.minecraft.world.phys.BlockHitResult) hitResult;
+					lookingAt = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(blockHit.getBlockPos()).getBlock()).getPath();
+				} else if (hitResult.getType() == net.minecraft.world.phys.HitResult.Type.ENTITY) {
+					var entHit = (net.minecraft.world.phys.EntityHitResult) hitResult;
+					lookingAt = entHit.getEntity().getName().getString();
+				}
+			}
+
+			// Nearby entities
+			java.util.List<net.minecraft.world.entity.Entity> entities = mc.level.getEntities(mc.player, mc.player.getBoundingBox().inflate(15.0));
+			java.util.Map<String, Integer> entCounts = new java.util.HashMap<>();
+			for (net.minecraft.world.entity.Entity e : entities) {
+				String name = e.getName().getString();
+				entCounts.put(name, entCounts.getOrDefault(name, 0) + 1);
+			}
+			java.util.List<String> entParts = new java.util.ArrayList<>();
+			for (java.util.Map.Entry<String, Integer> e : entCounts.entrySet()) {
+				entParts.add(e.getValue() + " " + e.getKey());
+			}
+			String nearby = entParts.isEmpty() ? "none" : String.join(", ", entParts);
+
+			return "\n\nLIVE TELEMETRY (real values, use them when asked):\n"
+					+ "current_xyz: " + mc.player.blockPosition().toShortString() + "\n"
+					+ "health: " + health + "\n"
+					+ "world_age_days: " + day + "\n"
+					+ "looking_at: " + lookingAt + "\n"
+					+ "nearby_entities: " + nearby + "\n"
+					+ "inventory: " + inv;
+		} catch (Exception e) {
+			return "";
 		}
 	}
 

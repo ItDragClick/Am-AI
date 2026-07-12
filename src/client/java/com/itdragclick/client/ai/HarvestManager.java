@@ -23,17 +23,18 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Unified multi-step state machine for resource workflows. Everything runs
- * on the main game thread via {@code ClientTickEvents.END_CLIENT_TICK}; the
- * heavy lifting (pathing, digging, chasing) is Baritone's / the combat
- * loop's, so no tick is ever blocked.
+ * Unified multi-step gathering state machine (main thread, tick-driven).
  *
- * Block Harvesting Chain ("i want some logs"):
- *   MINING -> RETURN_TO_PLAYER -> drop_items at their feet -> IDLE
- * Mob Drops Chain — the Porkchop Workflow ("find me porkchop" => attack pig):
- *   HUNTING (combat loop kills matching animals until the drops are in the
- *   inventory) -> RETURN_TO_PLAYER -> drop_items within 2 blocks -> IDLE
- * deposit_chest remains the explicit container delivery path.
+ * Block Harvesting Chain: MINING until the requested quantity is met (no
+ * hardcoded caps — the LLM's "quantity" field drives it), then delivery.
+ * Mob Drops Chain (Porkchop Workflow): HUNTING keeps the combat loop fed and
+ * vacuums ground drops between kills until the quantity is met.
+ * Delivery: explicit chest coordinates (LLM "chest_coords") take priority,
+ * then the requesting player (walk back + drop at their feet), then the
+ * memory-bank chest, else hold.
+ *
+ * Integrates with {@link AIStateManager}'s LIFO stack: new tasks preempt via
+ * captureAndPause(); completion pops the next queued task.
  */
 public final class HarvestManager {
 
@@ -47,8 +48,42 @@ public final class HarvestManager {
 			"sheep", "mutton",
 			"rabbit", "rabbit");
 
-	private static final int DEFAULT_BLOCK_TARGET = 16;
-	private static final int DEFAULT_MOB_DROP_TARGET = 3;
+	/**
+	 * Requested item -> the ore blocks Baritone must actually mine. Ores
+	 * don't drop themselves ("mine diamond_ore" never puts 'diamond_ore' in
+	 * the inventory), so counting always tracks the DROP item.
+	 */
+	private static final Map<String, String[]> ORE_SOURCES = Map.ofEntries(
+			Map.entry("diamond", new String[]{"diamond_ore", "deepslate_diamond_ore"}),
+			Map.entry("emerald", new String[]{"emerald_ore", "deepslate_emerald_ore"}),
+			Map.entry("coal", new String[]{"coal_ore", "deepslate_coal_ore"}),
+			Map.entry("redstone", new String[]{"redstone_ore", "deepslate_redstone_ore"}),
+			Map.entry("lapis_lazuli", new String[]{"lapis_ore", "deepslate_lapis_ore"}),
+			Map.entry("raw_iron", new String[]{"iron_ore", "deepslate_iron_ore"}),
+			Map.entry("raw_gold", new String[]{"gold_ore", "deepslate_gold_ore"}),
+			Map.entry("raw_copper", new String[]{"copper_ore", "deepslate_copper_ore"}));
+
+	/** Ore block -> its drop (for requests phrased as the block name). */
+	private static final Map<String, String> BLOCK_DROPS = Map.ofEntries(
+			Map.entry("diamond_ore", "diamond"), Map.entry("deepslate_diamond_ore", "diamond"),
+			Map.entry("emerald_ore", "emerald"), Map.entry("deepslate_emerald_ore", "emerald"),
+			Map.entry("coal_ore", "coal"), Map.entry("deepslate_coal_ore", "coal"),
+			Map.entry("redstone_ore", "redstone"), Map.entry("deepslate_redstone_ore", "redstone"),
+			Map.entry("lapis_ore", "lapis_lazuli"), Map.entry("deepslate_lapis_ore", "lapis_lazuli"),
+			Map.entry("iron_ore", "raw_iron"), Map.entry("deepslate_iron_ore", "raw_iron"),
+			Map.entry("gold_ore", "raw_gold"), Map.entry("deepslate_gold_ore", "raw_gold"),
+			Map.entry("copper_ore", "raw_copper"), Map.entry("stone", "cobblestone"));
+
+	/** Drop item -> the minimum pickaxe tier needed to mine its ore. */
+	private static final Map<String, String> REQUIRED_PICKAXE = Map.of(
+			"diamond", "iron_pickaxe", "emerald", "iron_pickaxe",
+			"redstone", "iron_pickaxe", "raw_gold", "iron_pickaxe",
+			"raw_iron", "stone_pickaxe", "lapis_lazuli", "stone_pickaxe",
+			"raw_copper", "stone_pickaxe",
+			"coal", "wooden_pickaxe", "cobblestone", "wooden_pickaxe");
+
+	public static final int DEFAULT_BLOCK_TARGET = 16;
+	public static final int DEFAULT_MOB_DROP_TARGET = 3;
 	private static final double DELIVERY_RADIUS = 2.0;
 	private static final double CHEST_REACH = 4.0;
 	private static final int OPEN_RETRY_TICKS = 60;
@@ -57,12 +92,16 @@ public final class HarvestManager {
 
 	private static Phase phase = Phase.IDLE;
 	private static String targetItemId;
+	/** Blocks Baritone actually digs (differs from targetItemId for ores). */
+	private static String[] mineBlockIds;
 	private static String huntMobName;
 	private static int targetCount;
 	private static int baselineCount;
 	private static String requester;
+	private static int[] chestOverride;
 	private static int phaseTicks;
 	private static int repathCooldown;
+	private static int maxDurationTicks;
 
 	private HarvestManager() {
 	}
@@ -75,48 +114,124 @@ public final class HarvestManager {
 		return phase != Phase.IDLE;
 	}
 
+	public static String getCurrentTaskDescription() {
+		if (phase == Phase.IDLE) return "IDLE";
+		String target = targetCount + " x " + targetItemId;
+		return switch (phase) {
+			case MINING -> "MINING " + target;
+			case HUNTING -> "HUNTING for " + target;
+			case RETURN_TO_PLAYER -> "DELIVERING " + target + " to " + requester;
+			case GOTO_CHEST -> "MOVING to chest with " + target;
+			case DEPOSITING -> "DEPOSITING " + target + " into chest";
+			default -> "HARVESTING " + target;
+		};
+	}
+
 	// -------------------------------------------------------------- orders
 
-	/** Block Harvesting Chain, step 1: Baritone digs; we track accumulation. */
-	public static void startHarvest(String blockId, String requestedBy) {
+	public static void startHarvest(String blockId, int quantity, String requestedBy, int[] chest, int durationSeconds, boolean preempt) {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player == null) {
 			return;
 		}
-		targetItemId = blockId.toLowerCase(Locale.ROOT).replace("minecraft:", "");
+		String resolved = RegistryResolver.resolveBlock(blockId);
+		if (resolved == null) {
+			resolved = RegistryResolver.resolveItem(blockId);
+		}
+		if (resolved == null) {
+			AIDashboardFrame.appendSystemLog("[HARVEST] Unknown block '" + blockId + "' — no registry match, ignoring.");
+			return;
+		}
+		// Ore chains: mine the ore blocks, count the DROP item.
+		String countItem = BLOCK_DROPS.getOrDefault(resolved, resolved);
+		String[] sources = ORE_SOURCES.get(countItem);
+		if (sources == null) {
+			sources = new String[]{resolved};
+		}
+
+		if (preempt) {
+			AIStateManager.preemptForNewTask();
+		}
+		targetItemId = countItem;
+		mineBlockIds = sources;
 		huntMobName = null;
-		targetCount = DEFAULT_BLOCK_TARGET;
+		targetCount = quantity > 0 ? quantity : DEFAULT_BLOCK_TARGET;
 		requester = requestedBy;
+		chestOverride = chest;
+		maxDurationTicks = durationSeconds > 0 ? durationSeconds * 20 : 0;
 		baselineCount = InventoryHelper.countItem(mc.player, targetItemId);
+
+		// Tool gating: no adequate pickaxe means the plan can't succeed —
+		// park this harvest on the LIFO stack and craft the tool first.
+		String neededPick = REQUIRED_PICKAXE.get(countItem);
+		if (neededPick != null && !hasPickaxeTier(mc.player, neededPick) && CraftPlanner.canPlan(neededPick)) {
+			AIDashboardFrame.appendSystemLog("[HARVEST] Plan for " + targetCount + " x '" + countItem + "':");
+			AIDashboardFrame.appendSystemLog("  1. Craft a " + neededPick + " (progressive chain)");
+			AIDashboardFrame.appendSystemLog("  2. Mine " + String.join("/", sources));
+			AIDashboardFrame.appendSystemLog("  3. Deliver"
+					+ (chest != null ? " to chest (" + chest[0] + ", " + chest[1] + ", " + chest[2] + ")" : " to " + requestedBy));
+			announce(mc, "I need a " + neededPick + " first — crafting one, then I'll get your " + countItem + "!");
+			AIStateManager.TaskContext pending = captureAndPause();
+			com.itdragclick.client.ai.AIStateManager.pushTask(pending);
+			CraftPlanner.start(neededPick, null, false);
+			return;
+		}
+
 		phase = Phase.MINING;
 		phaseTicks = 0;
-		BaritoneBridge.mine(targetItemId);
+		BaritoneBridge.mineAny(mineBlockIds);
 		AIDashboardFrame.appendSystemLog("[HARVEST] Plan started: gather " + targetCount + " x '"
-				+ targetItemId + "' for " + (requester != null ? requester : "the base") + ".");
+				+ targetItemId + "' (mining " + String.join("/", sources) + ") for "
+				+ (requester != null ? requester : "the base")
+				+ (chest != null ? " -> chest (" + chest[0] + ", " + chest[1] + ", " + chest[2] + ")" : "") 
+				+ (maxDurationTicks > 0 ? " [Limit: " + (maxDurationTicks / 20) + "s]" : "") + ".");
 		if (requester != null) {
-			AIMemoryStore.addFact("Player " + requester + " asked for " + targetItemId);
+			AIMemoryStore.addFact("Player " + requester + " asked for " + targetCount + " " + targetItemId);
 		}
 	}
 
-	/**
-	 * Porkchop Workflow, step 1 (Hunt): combat loop chases + kills matching
-	 * animals while we watch the drop count in the inventory.
-	 */
-	public static void startHunt(String mobName, String dropItemId, String requestedBy) {
+	/** True when the inventory holds this pickaxe tier or better. */
+	private static boolean hasPickaxeTier(LocalPlayer player, String needed) {
+		String[] atLeast = switch (needed) {
+			case "iron_pickaxe" -> new String[]{"iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"};
+			case "stone_pickaxe" -> new String[]{"stone_pickaxe", "iron_pickaxe", "golden_pickaxe",
+					"diamond_pickaxe", "netherite_pickaxe"};
+			default -> new String[]{"wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "golden_pickaxe",
+					"diamond_pickaxe", "netherite_pickaxe"};
+		};
+		for (String pick : atLeast) {
+			if (InventoryHelper.countItem(player, pick) > 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Back-compat entry for the re-gear loop. */
+	public static void startHarvest(String blockId, String requestedBy) {
+		startHarvest(blockId, DEFAULT_BLOCK_TARGET, requestedBy, null, 0, true);
+	}
+
+	public static void startHunt(String mobName, String dropItemId, int quantity, String requestedBy, int durationSeconds, boolean preempt) {
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player == null) {
 			return;
 		}
+		if (preempt) {
+			AIStateManager.preemptForNewTask();
+		}
 		huntMobName = mobName.toLowerCase(Locale.ROOT);
 		targetItemId = dropItemId;
-		targetCount = DEFAULT_MOB_DROP_TARGET;
+		targetCount = quantity > 0 ? quantity : DEFAULT_MOB_DROP_TARGET;
 		requester = requestedBy;
+		chestOverride = null;
+		maxDurationTicks = durationSeconds > 0 ? durationSeconds * 20 : 0;
 		baselineCount = InventoryHelper.countItem(mc.player, targetItemId);
 		phase = Phase.HUNTING;
 		phaseTicks = 0;
 		SurvivalMonitor.requestAttack(huntMobName);
 		AIDashboardFrame.appendSystemLog("[HUNT] Plan started: hunt '" + huntMobName + "' until "
-				+ targetCount + " x '" + targetItemId + "' collected for " + requester + ".");
+				+ targetCount + " x '" + targetItemId + "' collected for " + requester + (maxDurationTicks > 0 ? " [Limit: " + (maxDurationTicks / 20) + "s]" : "") + ".");
 		if (requester != null) {
 			AIMemoryStore.addFact("Player " + requester + " asked for " + targetItemId);
 		}
@@ -127,6 +242,7 @@ public final class HarvestManager {
 		AIMemoryStore.setKnownChest(x, y, z);
 		AIDashboardFrame.appendSystemLog("[HARVEST] Drop-off chest registered at (" + x + ", " + y + ", " + z + ")");
 		if (targetItemId != null) {
+			chestOverride = new int[]{x, y, z};
 			phase = Phase.GOTO_CHEST;
 			phaseTicks = 0;
 			BaritoneBridge.goTo(x, y, z);
@@ -136,18 +252,51 @@ public final class HarvestManager {
 	/** Combat interrupted us: re-issue the current milestone's Baritone task. */
 	public static void reissueCurrentStep() {
 		switch (phase) {
-			case MINING -> BaritoneBridge.mine(targetItemId);
+			case MINING -> BaritoneBridge.mineAny(mineBlockIds != null ? mineBlockIds : new String[]{targetItemId});
 			case HUNTING -> SurvivalMonitor.requestAttack(huntMobName);
 			case RETURN_TO_PLAYER -> repathCooldown = 0;
 			case GOTO_CHEST -> {
-				AIMemoryStore.ChestPos chest = AIMemoryStore.getKnownChest();
+				int[] chest = deliveryChest();
 				if (chest != null) {
-					BaritoneBridge.goTo(chest.x, chest.y, chest.z);
+					BaritoneBridge.goTo(chest[0], chest[1], chest[2]);
 				}
 			}
 			default -> {
 			}
 		}
+	}
+
+	/** LIFO stack integration: serialize remaining progress and go quiet. */
+	public static AIStateManager.TaskContext captureAndPause() {
+		if (phase == Phase.IDLE) {
+			return null;
+		}
+		Minecraft mc = Minecraft.getInstance();
+		AIStateManager.TaskContext ctx = new AIStateManager.TaskContext();
+		ctx.item = targetItemId;
+		ctx.requester = requester;
+		ctx.chest = chestOverride;
+		int remaining = targetCount;
+		if (mc.player != null && targetItemId != null) {
+			remaining = Math.max(1, targetCount - (InventoryHelper.countItem(mc.player, targetItemId) - baselineCount));
+		}
+		ctx.quantity = remaining;
+		ctx.durationSeconds = maxDurationTicks > 0 ? Math.max(0, (maxDurationTicks - phaseTicks) / 20) : 0;
+		if (huntMobName != null) {
+			ctx.type = AIStateManager.TaskContext.Type.HUNT;
+			ctx.mob = huntMobName;
+		} else {
+			ctx.type = AIStateManager.TaskContext.Type.HARVEST;
+		}
+		phase = Phase.IDLE;
+		targetItemId = null;
+		mineBlockIds = null;
+		huntMobName = null;
+		requester = null;
+		chestOverride = null;
+		BaritoneBridge.stopQuietly();
+		SurvivalMonitor.clearAllOrders();
+		return ctx;
 	}
 
 	/** stop action / death: abandon the plan cleanly. */
@@ -159,6 +308,7 @@ public final class HarvestManager {
 		targetItemId = null;
 		huntMobName = null;
 		requester = null;
+		chestOverride = null;
 	}
 
 	// -------------------------------------------------------------- ticker
@@ -182,6 +332,16 @@ public final class HarvestManager {
 
 	/** Shared accumulation watcher for MINING and HUNTING (checked 1x/sec). */
 	private static void tickGathering(LocalPlayer player, boolean hunting) {
+		if (maxDurationTicks > 0 && phaseTicks >= maxDurationTicks) {
+			AIDashboardFrame.appendSystemLog("[" + (hunting ? "HUNT" : "HARVEST") + "] Time limit reached.");
+			if (hunting) {
+				SurvivalMonitor.clearAllOrders();
+			} else {
+				BaritoneBridge.stop();
+			}
+			beginDelivery();
+			return;
+		}
 		if (phaseTicks % 20 != 0) {
 			return;
 		}
@@ -212,28 +372,17 @@ public final class HarvestManager {
 		}
 	}
 
-	private static ItemEntity findNearestDrop(LocalPlayer player, String itemId, double radius) {
-		Minecraft mc = Minecraft.getInstance();
-		ItemEntity nearest = null;
-		double nearestDistance = radius;
-		for (Entity entity : mc.level.entitiesForRendering()) {
-			if (!(entity instanceof ItemEntity item) || !item.isAlive()) {
-				continue;
-			}
-			if (!InventoryHelper.itemIdOf(item.getItem()).equals(itemId)) {
-				continue;
-			}
-			double distance = player.distanceTo(item);
-			if (distance <= nearestDistance) {
-				nearest = item;
-				nearestDistance = distance;
-			}
-		}
-		return nearest;
-	}
-
+	/** Delivery priority: explicit chest coords > requester > memory chest. */
 	private static void beginDelivery() {
-		// Preferred: walk back to the requesting player and drop at their feet.
+		int[] chest = chestOverride;
+		if (chest != null) {
+			phase = Phase.GOTO_CHEST;
+			phaseTicks = 0;
+			BaritoneBridge.goTo(chest[0], chest[1], chest[2]);
+			AIDashboardFrame.appendSystemLog("[DELIVER] Heading to the specified chest ("
+					+ chest[0] + ", " + chest[1] + ", " + chest[2] + ").");
+			return;
+		}
 		if (requester != null) {
 			phase = Phase.RETURN_TO_PLAYER;
 			phaseTicks = 0;
@@ -241,22 +390,16 @@ public final class HarvestManager {
 			AIDashboardFrame.appendSystemLog("[DELIVER] Returning to " + requester + " with the goods.");
 			return;
 		}
-		// No requester (e.g. re-gear loop): use the chest if one is known.
-		AIMemoryStore.ChestPos chest = AIMemoryStore.getKnownChest();
-		if (chest != null) {
-			phase = Phase.GOTO_CHEST;
-			phaseTicks = 0;
-			BaritoneBridge.goTo(chest.x, chest.y, chest.z);
+		AIMemoryStore.ChestPos memoryChest = AIMemoryStore.getKnownChest();
+		if (memoryChest != null) {
+			chestOverride = new int[]{memoryChest.x, memoryChest.y, memoryChest.z};
+			beginDelivery();
 			return;
 		}
-		AIDashboardFrame.appendSystemLog("[DELIVER] No requester and no chest — holding items, going idle.");
-		phase = Phase.IDLE;
+		AIDashboardFrame.appendSystemLog("[DELIVER] No chest and no requester — holding items, going idle.");
+		finishPlan();
 	}
 
-	/**
-	 * Steps 2+3 of both chains: track the requester's live position, path to
-	 * them, and drop the goods within 2 blocks of their feet.
-	 */
 	private static void tickReturnToPlayer(Minecraft mc, LocalPlayer player) {
 		Player target = findPlayerByName(mc, requester);
 		if (target == null) {
@@ -269,7 +412,6 @@ public final class HarvestManager {
 		}
 		double distance = player.distanceTo(target);
 		if (distance > DELIVERY_RADIUS) {
-			// Chase the player's real-time coordinates (repath throttled).
 			if (--repathCooldown <= 0) {
 				BlockPos pos = target.blockPosition();
 				BaritoneBridge.goTo(pos.getX(), pos.getY(), pos.getZ());
@@ -278,25 +420,60 @@ public final class HarvestManager {
 			return;
 		}
 		BaritoneBridge.stop();
-		int dropped = InventoryHelper.dropAllOf(mc, player, targetItemId);
+		int dropped = InventoryHelper.requestDrop(mc, player, targetItemId, 0); // drop all gathered
 		announce(mc, dropped > 0
 				? "Here you go, " + requester + "! Dropped your " + targetItemId + "."
 				: "Huh, I seem to have lost the " + targetItemId + " somewhere...");
 		finishPlan();
 	}
 
+	private static int[] deliveryChest() {
+		if (chestOverride != null) {
+			return chestOverride;
+		}
+		AIMemoryStore.ChestPos chest = AIMemoryStore.getKnownChest();
+		return chest != null ? new int[]{chest.x, chest.y, chest.z} : null;
+	}
+
+	private static boolean isContainer(Minecraft mc, BlockPos pos) {
+		String name = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(pos).getBlock()).getPath();
+		return name.contains("chest") || name.contains("barrel") || name.contains("shulker_box");
+	}
+
 	private static void tickGotoChest(Minecraft mc, LocalPlayer player) {
-		AIMemoryStore.ChestPos chestPos = AIMemoryStore.getKnownChest();
-		if (chestPos == null) {
-			phase = Phase.IDLE;
+		int[] chest = deliveryChest();
+		if (chest == null) {
+			finishPlan();
 			return;
 		}
-		BlockPos pos = new BlockPos(chestPos.x, chestPos.y, chestPos.z);
+		BlockPos pos = new BlockPos(chest[0], chest[1], chest[2]);
 		if (!pos.closerToCenterThan(player.position(), CHEST_REACH)) {
 			return; // Baritone still travelling
 		}
 		BaritoneBridge.stop();
-		// Open the chest: right-click its top face.
+
+		if (!isContainer(mc, pos)) {
+			BlockPos found = null;
+			for (BlockPos p : BlockPos.betweenClosed(pos.offset(-3, -3, -3), pos.offset(3, 3, 3))) {
+				if (isContainer(mc, p)) {
+					found = p.immutable();
+					break;
+				}
+			}
+			if (found != null) {
+				pos = found;
+				chestOverride = new int[]{pos.getX(), pos.getY(), pos.getZ()};
+				AIDashboardFrame.appendSystemLog("[HARVEST] Chest moved — updated target to " + pos.toShortString());
+			} else {
+				int dropped = InventoryHelper.requestDrop(mc, player, targetItemId, 0);
+				announce(mc, "The chest is missing! I dropped " + dropped + " '" + targetItemId + "' right here.");
+				AIDashboardFrame.appendSystemLog("[HARVEST] Chest missing. Dropped items as fallback. Plan complete.");
+				finishPlan();
+				return;
+			}
+		}
+
+		// Open the chest: right-click it.
 		Vec3 center = Vec3.atCenterOf(pos);
 		player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, center);
 		BlockHitResult hit = new BlockHitResult(center, Direction.UP, pos, false);
@@ -330,7 +507,8 @@ public final class HarvestManager {
 		}
 		player.closeContainer();
 		AIDashboardFrame.appendSystemLog("[HARVEST] Deposited " + moved + " stack(s) of '" + targetItemId + "'. Plan complete.");
-		announce(mc, "Delivered the " + targetItemId + " to the chest!");
+		announce(mc, "Delivered the " + targetItemId + " to the chest!"
+				+ (requester != null ? " Enjoy, " + requester + "!" : ""));
 		finishPlan();
 	}
 
@@ -339,8 +517,31 @@ public final class HarvestManager {
 	private static void finishPlan() {
 		phase = Phase.IDLE;
 		targetItemId = null;
+		mineBlockIds = null;
 		huntMobName = null;
 		requester = null;
+		chestOverride = null;
+		AIStateManager.taskCompleted();
+	}
+
+	private static ItemEntity findNearestDrop(LocalPlayer player, String itemId, double radius) {
+		Minecraft mc = Minecraft.getInstance();
+		ItemEntity nearest = null;
+		double nearestDistance = radius;
+		for (Entity entity : mc.level.entitiesForRendering()) {
+			if (!(entity instanceof ItemEntity item) || !item.isAlive()) {
+				continue;
+			}
+			if (!InventoryHelper.itemIdOf(item.getItem()).equals(itemId)) {
+				continue;
+			}
+			double distance = player.distanceTo(item);
+			if (distance <= nearestDistance) {
+				nearest = item;
+				nearestDistance = distance;
+			}
+		}
+		return nearest;
 	}
 
 	private static Player findPlayerByName(Minecraft mc, String name) {

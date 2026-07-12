@@ -17,10 +17,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 
-import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 /**
  * Per-tick "common sense" layer. Registered on Fabric's
@@ -62,11 +59,10 @@ public final class SurvivalMonitor {
 	private static final int HUNGER_COMBAT_SAFE = 12;
 	private static final double COMBAT_RETREAT_BLOCKS = 5.0;
 
-	/**
-	 * Friendly-fire whitelist. These players are NEVER attacked — not as an
-	 * auto-defense threat, not on an explicit LLM order.
-	 */
-	private static final Set<String> FRIENDLY_PLAYERS = new HashSet<>(List.of("Golden_Allay", "taffer2630"));
+	/** Extended attacker scan for ranged hits (skeleton arrows from afar). */
+	private static final double RANGED_THREAT_RADIUS = 16.0;
+	/** Golden apple emergency threshold (5 hearts). */
+	private static final float GAPPLE_HEALTH_THRESHOLD = 10.0f;
 
 	// ------------------------------------------------------------- state
 	private static float lastHealth = -1.0f;
@@ -92,6 +88,15 @@ public final class SurvivalMonitor {
 	private static String attackTargetName = null;
 	private static LivingEntity attackTarget = null;
 	private static int attackSearchTicks = 0;
+	/** True when the attack order targets a player: lock on until death. */
+	private static boolean attackTargetIsPlayer = false;
+
+	/** follow_protect stance: whitelisted player being escorted, or null. */
+	private static String protectTarget = null;
+
+	/** Emergency golden-apple consumption (health < 10 in combat). */
+	private static boolean gappleActive = false;
+	private static int gappleStartCount = 0;
 
 	private SurvivalMonitor() {
 	}
@@ -153,20 +158,20 @@ public final class SurvivalMonitor {
 		Minecraft mc = Minecraft.getInstance();
 		exitCombat(mc, false);
 		clearAttackOrder();
+		protectTarget = null;
+		gappleActive = false;
 	}
 
-	/** Whitelist check used by every targeting path. */
+	/** follow_protect stance: trail a whitelisted friend and defend them. */
+	public static void requestFollowProtect(String playerName) {
+		protectTarget = playerName.strip();
+		BaritoneBridge.follow(protectTarget);
+		AIDashboardFrame.appendSystemLog("[PROTECT] Escorting '" + protectTarget + "' — hostiles will be engaged.");
+	}
+
+	/** Whitelist check used by every targeting path (dynamic runtime list). */
 	public static boolean isFriendly(String name) {
-		if (name == null) {
-			return false;
-		}
-		String normalized = name.strip();
-		for (String friend : FRIENDLY_PLAYERS) {
-			if (friend.equalsIgnoreCase(normalized)) {
-				return true;
-			}
-		}
-		return false;
+		return AIWhitelistManager.isWhitelisted(name);
 	}
 
 	private static boolean isFriendly(Entity entity) {
@@ -175,21 +180,55 @@ public final class SurvivalMonitor {
 
 	// -------------------------------------------------------------- ticker
 
+	private static boolean emergencySwim = false;
+
 	private static void onTick(Minecraft mc) {
 		LocalPlayer player = mc.player;
 		if (player == null || mc.level == null) {
 			resetTransientState(mc);
 			return;
 		}
+		
+		InventoryHelper.tickDrops(mc, player);
 
 		if (handleDeath(mc, player)) {
 			return;
 		}
+
+		// Emergency drowning prevention
+		if (player.getAirSupply() < 60) {
+			if (!emergencySwim) {
+				emergencySwim = true;
+				BaritoneBridge.pauseForCombat();
+				AIDashboardFrame.appendSystemLog("[SURVIVAL] Low air! Emergency surfacing.");
+			}
+			mc.options.keyJump.setDown(true);
+			
+			// If there's a block directly above us, try to break it
+			BlockPos above = player.blockPosition().above(2);
+			if (!mc.level.getBlockState(above).isAir()) {
+				player.setXRot(-90.0f); // Look straight up
+				mc.options.keyAttack.setDown(true);
+			} else {
+				mc.options.keyAttack.setDown(false);
+			}
+			
+			return; // Skip combat/eating/etc to focus on surviving
+		} else if (emergencySwim && player.getAirSupply() == player.getMaxAirSupply()) {
+			emergencySwim = false;
+			mc.options.keyJump.setDown(false);
+			mc.options.keyAttack.setDown(false);
+			BaritoneBridge.resumeRememberedGoal();
+			AIDashboardFrame.appendSystemLog("[SURVIVAL] Air restored. Resuming task.");
+		}
+
 		handleRespawnRecovery(player);
 		flushPendingRespawnChat(mc, player);
 
 		tickAutoEat(mc, player);
 		tickEating(mc, player);
+		tickGoldenApple(mc, player);
+		tickProtect(mc, player);
 		tickManualAttack(mc, player);
 		tickCombatDefense(mc, player);
 
@@ -211,7 +250,11 @@ public final class SurvivalMonitor {
 			stopEating(mc, player);
 			exitCombat(mc, false);
 			clearAttackOrder();
+			gappleActive = false;
+			AIStateManager.onDeath();
 			HarvestManager.cancel();
+			FarmManager.cancel();
+			CraftPlanner.cancel();
 			AIDashboardFrame.appendSystemLog("[SYSTEM] Player has died at " + deathPos.toShortString()
 					+ " in " + deathDimension + ".");
 			OllamaNetworkClient.submitPrompt(OllamaNetworkClient.Source.SYSTEM, "System",
@@ -248,9 +291,10 @@ public final class SurvivalMonitor {
 		if (deathPos == null) {
 			return;
 		}
-		AIDashboardFrame.appendSystemLog("[SYSTEM] Items lost permanently. Re-gearing strategy activated.");
+		AIDashboardFrame.appendSystemLog("[SYSTEM] Items lost permanently. Re-gearing strategy disabled, waiting for orders.");
 		BaritoneBridge.stop();
-		HarvestManager.startHarvest("oak_log", null);
+		// Interrupted journeys queue up on the LIFO stack.
+		AIStateManager.requeueJourneyAfterRespawn();
 		deathPos = null;
 		deathDimension = null;
 	}
@@ -271,19 +315,24 @@ public final class SurvivalMonitor {
 
 	// ---------------------------------------------------------------- eat
 
-	/** Hunger watchdog: kicks in below 14 without any LLM order. */
+	/** Hunger watchdog: kicks in below 14, or when health < 12 and hunger < 20. */
 	private static void tickAutoEat(Minecraft mc, LocalPlayer player) {
-		if (eating || player.getFoodData().getFoodLevel() >= HUNGER_AUTO_EAT) {
+		if (eating) {
+			return;
+		}
+		int hunger = player.getFoodData().getFoodLevel();
+		float health = player.getHealth();
+		boolean lowHealth = health < HEALTH_PANIC_THRESHOLD && hunger < 20;
+		if (hunger >= HUNGER_AUTO_EAT && !lowHealth) {
 			return;
 		}
 		// Mid-combat we only interrupt for a critical stomach; the combat
 		// handler owns the retreat choreography.
-		if (isInCombat() && player.getFoodData().getFoodLevel() >= HUNGER_CRITICAL) {
+		if (isInCombat() && hunger >= HUNGER_CRITICAL && !lowHealth) {
 			return;
 		}
 		if (beginEating(mc, player)) {
-			AIDashboardFrame.appendSystemLog("[EAT] Auto-eat engaged (hunger "
-					+ player.getFoodData().getFoodLevel() + "/20).");
+			AIDashboardFrame.appendSystemLog("[EAT] Auto-eat engaged (hunger " + hunger + "/20, health " + health + ").");
 		}
 	}
 
@@ -301,6 +350,9 @@ public final class SurvivalMonitor {
 		}
 		slotBeforeEating = previousSlot;
 		eating = true;
+		if (!combatEatHold && !emergencySwim) {
+			BaritoneBridge.pauseForCombat();
+		}
 		AIDashboardFrame.appendSystemLog("[EAT] Eating '"
 				+ player.getInventory().getSelectedItem().getHoverName().getString()
 				+ "' until hunger is restored.");
@@ -340,6 +392,111 @@ public final class SurvivalMonitor {
 			player.getInventory().setSelectedSlot(slotBeforeEating);
 			slotBeforeEating = -1;
 		}
+		if (!combatEatHold && !emergencySwim && !combatMode) {
+			BaritoneBridge.resumeRememberedGoal();
+		}
+	}
+
+	// ---------------------------------------------------- golden apple
+
+	/**
+	 * Emergency override: health under 5 hearts during any engagement —
+	 * pause swinging, eat a golden apple from anywhere in the inventory,
+	 * then snap back to the weapon slot and resume fighting.
+	 */
+	private static void tickGoldenApple(Minecraft mc, LocalPlayer player) {
+		if (gappleActive) {
+			int remaining = InventoryHelper.countItem(player, "golden_apple")
+					+ InventoryHelper.countItem(player, "enchanted_golden_apple");
+			if (remaining < gappleStartCount || remaining == 0) {
+				// Consumed (or ran out): release, re-arm, resume combat.
+				gappleActive = false;
+				mc.options.keyUse.setDown(false);
+				InventoryHelper.equipBestWeapon(mc, player);
+				AIDashboardFrame.appendSystemLog("[GAPPLE] Golden apple consumed — back to the fight.");
+			} else {
+				mc.options.keyUse.setDown(true);
+			}
+			return;
+		}
+		if (!isInCombat() || player.getHealth() >= GAPPLE_HEALTH_THRESHOLD) {
+			return;
+		}
+		int slot = -1;
+		for (int i = 0; i < 36; i++) {
+			String id = InventoryHelper.itemIdOf(player.getInventory().getItem(i));
+			if (id.equals("golden_apple") || id.equals("enchanted_golden_apple")) {
+				slot = i;
+				break;
+			}
+		}
+		if (slot < 0) {
+			return; // no gapples — the normal food path has to do
+		}
+		if (slot != InventoryHelper.FOOD_HOTBAR_SLOT) {
+			InventoryHelper.swapIntoHotbar(mc, player, slot, InventoryHelper.FOOD_HOTBAR_SLOT);
+		}
+		player.getInventory().setSelectedSlot(InventoryHelper.FOOD_HOTBAR_SLOT);
+		gappleStartCount = InventoryHelper.countItem(player, "golden_apple")
+				+ InventoryHelper.countItem(player, "enchanted_golden_apple");
+		gappleActive = true;
+		AIDashboardFrame.appendSystemLog("[GAPPLE] Critical health (" + player.getHealth()
+				+ ") — emergency golden apple override.");
+	}
+
+	// ------------------------------------------------------ follow_protect
+
+	/** Escort stance: watch the protected player, engage whatever hurts them. */
+	private static void tickProtect(Minecraft mc, LocalPlayer player) {
+		if (protectTarget == null || attackTargetName != null) {
+			return;
+		}
+		Player escorted = null;
+		for (Entity entity : mc.level.entitiesForRendering()) {
+			if (entity instanceof Player p && p.getName().getString().equalsIgnoreCase(protectTarget) && p.isAlive()) {
+				escorted = p;
+				break;
+			}
+		}
+		if (escorted == null) {
+			return; // out of render range; Baritone keeps following
+		}
+		// Any hostile monster within 8 blocks of the escorted player?
+		LivingEntity threat = null;
+		double nearest = 8.0;
+		for (Entity entity : mc.level.entitiesForRendering()) {
+			if (entity instanceof Monster monster && monster.isAlive()) {
+				double d = escorted.distanceTo(monster);
+				if (d <= nearest) {
+					nearest = d;
+					threat = monster;
+				}
+			}
+		}
+		// The escorted player is visibly taking hits (hurtTime is synced to
+		// clients) with no monster around: the attacker is a player —
+		// engage the nearest non-whitelisted one next to them.
+		if (threat == null && escorted.hurtTime > 0) {
+			double nearestPlayer = 6.0;
+			for (Entity entity : mc.level.entitiesForRendering()) {
+				if (entity instanceof Player other && other != player && other != escorted
+						&& other.isAlive() && !isFriendly(other)) {
+					double d = escorted.distanceTo(other);
+					if (d <= nearestPlayer) {
+						nearestPlayer = d;
+						threat = other;
+					}
+				}
+			}
+		}
+		if (threat != null) {
+			AIDashboardFrame.appendSystemLog("[PROTECT] Hostile near " + protectTarget + " — engaging!");
+			BaritoneBridge.stopQuietly();
+			attackTargetName = threat.getName().getString();
+			attackTarget = threat;
+			attackTargetIsPlayer = false;
+			attackSearchTicks = 0;
+		}
 	}
 
 	// ------------------------------------------------------- manual attack
@@ -350,22 +507,37 @@ public final class SurvivalMonitor {
 		}
 		// Locked-on target eliminated?
 		if (attackTarget != null && (!attackTarget.isAlive() || attackTarget.isRemoved())) {
-			AIDashboardFrame.appendSystemLog("[COMBAT] Target '" + attackTargetName + "' eliminated — order complete.");
-			clearAttackOrder();
-			releaseMovementKeys(mc);
-			return;
+			attackTargetIsPlayer = false;
+			attackTarget = null;
+			// Mob hunting: keep clearing the area — order only completes when
+			// no matching entity remains within the 32-block scan radius.
+			LivingEntity next = findNearestByName(mc, player, attackTargetName, TARGET_SEARCH_RADIUS);
+			if (next != null) {
+				attackTarget = next;
+				attackTargetIsPlayer = next instanceof Player;
+			} else {
+				AIDashboardFrame.appendSystemLog("[COMBAT] No more '" + attackTargetName
+						+ "' within " + (int) TARGET_SEARCH_RADIUS + " blocks — order complete.");
+				completeAttackOrder(mc);
+				return;
+			}
 		}
 		// (Re)acquire by name when not locked on or the target wandered off.
-		if (attackTarget == null || player.distanceTo(attackTarget) > TARGET_SEARCH_RADIUS) {
-			attackTarget = findNearestByName(mc, player, attackTargetName, TARGET_SEARCH_RADIUS);
+		double leash = attackTargetIsPlayer ? 64.0 : TARGET_SEARCH_RADIUS;
+		if (attackTarget == null || player.distanceTo(attackTarget) > leash) {
+			attackTarget = findNearestByName(mc, player, attackTargetName, leash);
+			if (attackTarget != null) {
+				attackTargetIsPlayer = attackTarget instanceof Player;
+			}
 		}
 		if (attackTarget == null) {
 			// Don't give up instantly — chunks/entities may still be loading.
-			if (++attackSearchTicks > TARGET_SEARCH_PATIENCE_TICKS) {
+			// Player targets get a much longer leash (lock-on until death).
+			int patience = attackTargetIsPlayer ? 600 : TARGET_SEARCH_PATIENCE_TICKS;
+			if (++attackSearchTicks > patience) {
 				AIDashboardFrame.appendSystemLog("[COMBAT] No entity named '" + attackTargetName
-						+ "' found within " + (int) TARGET_SEARCH_RADIUS + " blocks — order dropped.");
-				clearAttackOrder();
-				releaseMovementKeys(mc);
+						+ "' found — order dropped.");
+				completeAttackOrder(mc);
 			}
 			return;
 		}
@@ -373,10 +545,21 @@ public final class SurvivalMonitor {
 		engage(mc, player, attackTarget);
 	}
 
+	/** Order finished: release keys and, in escort stance, resume trailing. */
+	private static void completeAttackOrder(Minecraft mc) {
+		clearAttackOrder();
+		releaseMovementKeys(mc);
+		if (protectTarget != null) {
+			BaritoneBridge.follow(protectTarget);
+			AIDashboardFrame.appendSystemLog("[PROTECT] Threat handled — resuming escort of " + protectTarget + ".");
+		}
+	}
+
 	private static void clearAttackOrder() {
 		attackTargetName = null;
 		attackTarget = null;
 		attackSearchTicks = 0;
+		attackTargetIsPlayer = false;
 	}
 
 	// ------------------------------------------------------ combat defense
@@ -390,6 +573,11 @@ public final class SurvivalMonitor {
 				return;
 			}
 			LivingEntity attacker = findAttacker(mc, player, THREAT_TRIGGER_RADIUS);
+			// Ranged hits (skeleton arrows): nothing in melee range but we
+			// still bled — widen the monster scan before shrugging it off.
+			if (attacker == null && tookDamage) {
+				attacker = findNearestMonster(mc, player, RANGED_THREAT_RADIUS);
+			}
 			if (attacker != null) {
 				combatMode = true;
 				currentThreat = attacker;
@@ -463,6 +651,13 @@ public final class SurvivalMonitor {
 		if (synced != null && synced.isAlive() && !isFriendly(synced) && player.distanceTo(synced) <= radius) {
 			return synced;
 		}
+		// Projectile trace: an arrow near us right after taking damage means
+		// a ranged attacker — its owner is the real threat (skeleton snipers
+		// far outside the melee scan radius).
+		LivingEntity shooter = findProjectileShooter(mc, player);
+		if (shooter != null) {
+			return shooter;
+		}
 		LivingEntity monster = findNearestMonster(mc, player, radius);
 		if (monster != null) {
 			return monster;
@@ -480,6 +675,28 @@ public final class SurvivalMonitor {
 			}
 		}
 		return nearestPlayer;
+	}
+
+	/**
+	 * Finds the living owner of the nearest projectile within 8 blocks of
+	 * the bot — arrows/tridents that just hit (or whizzed past) us point
+	 * straight at their shooter.
+	 */
+	private static LivingEntity findProjectileShooter(Minecraft mc, LocalPlayer player) {
+		for (Entity entity : mc.level.entitiesForRendering()) {
+			if (!(entity instanceof net.minecraft.world.entity.projectile.Projectile projectile)) {
+				continue;
+			}
+			if (player.distanceTo(projectile) > 8.0) {
+				continue;
+			}
+			if (projectile.getOwner() instanceof LivingEntity owner
+					&& owner.isAlive() && owner != player && !isFriendly(owner)
+					&& player.distanceTo(owner) <= 64.0) {
+				return owner;
+			}
+		}
+		return null;
 	}
 
 	private static LivingEntity findNearestMonster(Minecraft mc, LocalPlayer player, double radius) {
@@ -536,6 +753,11 @@ public final class SurvivalMonitor {
 		if (isFriendly(target)) {
 			return;
 		}
+		// Golden apple override in progress: hold position, no swinging.
+		if (gappleActive) {
+			releaseMovementKeys(mc);
+			return;
+		}
 		player.lookAt(EntityAnchorArgument.Anchor.EYES, target.getEyePosition());
 		// Pre-action inventory prep: best weapon staged in hotbar slot 0.
 		if (!eating) {
@@ -562,6 +784,11 @@ public final class SurvivalMonitor {
 				mc.options.keyUp.setDown(true);
 				player.setSprinting(true);
 				movementKeysActive = true;
+			}
+			// Jump assist: hurdle blocks in the chase path instead of
+			// running face-first into them and stalling.
+			if (player.horizontalCollision && player.onGround()) {
+				player.jumpFromGround();
 			}
 		} else {
 			releaseMovementKeys(mc);
@@ -603,10 +830,17 @@ public final class SurvivalMonitor {
 			slotBeforeEating = -1;
 			mc.options.keyUse.setDown(false);
 		}
+		if (emergencySwim) {
+			emergencySwim = false;
+			mc.options.keyJump.setDown(false);
+			mc.options.keyAttack.setDown(false);
+		}
 		releaseMovementKeys(mc);
 		combatMode = false;
 		currentThreat = null;
 		combatEatHold = false;
+		gappleActive = false;
+		protectTarget = null;
 		clearAttackOrder();
 		lastHealth = -1.0f;
 		deathReported = false;

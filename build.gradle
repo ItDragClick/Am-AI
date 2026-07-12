@@ -33,12 +33,12 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
-	// Baritone API for 26.2 — required at compile time (BaritoneBridge calls it
-	// directly). Built from https://github.com/IzumiiKonata/baritone (26.2
-	// branch): ./gradlew build, then copy dist/baritone-api-fabric-*.jar here.
-	// Runtime needs the api (or unoptimized) build in the mods folder too; the
-	// standalone build is ProGuard-obfuscated and breaks API linkage.
+	// Baritone API for 26.2
 	compileOnly files("libs/baritone-api-fabric-26.2-SNAPSHOT.jar")
+
+	// FlatLaf (UI Overhaul)
+	implementation "com.formdev:flatlaf:3.5.1"
+	include "com.formdev:flatlaf:3.5.1"
 }
 
 processResources {
