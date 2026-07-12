@@ -1,0 +1,137 @@
+Logs:
+```
+[17:35:49] [LLM] Querying 'llama3.1:8b' (IN_GAME) for Golden_Allay: get 1 stack of dirt and put it in chest 152 65 17
+[17:35:52] [LLM] chat="Alright, Golden_Allay! I'll grab a stack of dirt for you. Mining dirt nearby..." action="mine dirt"
+[17:35:52] [BARITONE] Mining 'dirt'
+[17:35:52] [HARVEST] Plan started: gather 16 x 'dirt' for Golden_Allay.
+[17:36:12] [HARVEST] Quantity met (18 x 'dirt').
+[17:36:12] [BARITONE] All processes cancelled.
+[17:36:12] [DELIVER] Returning to Golden_Allay with the goods.
+[17:36:12] [BARITONE] Pathing to (155, 63, 9)
+[17:36:13] [BARITONE] All processes cancelled.
+[17:36:13] [INVENTORY] Dropped 19 x 'dirt' at my feet.
+[17:36:26] [CHAT] Task request from Golden_Allay: get 1 stack of dirt and put it in chest 152 65 17
+[17:36:26] [LLM] Querying 'llama3.1:8b' (IN_GAME) for Golden_Allay: get 1 stack of dirt and put it in chest 152 65 17
+[17:36:29] [LLM] chat="I've got the request, Golden_Allay! I'll mine some dirt for ya." action="mine dirt"
+[17:36:29] [BARITONE] Mining 'dirt'
+[17:36:29] [HARVEST] Plan started: gather 16 x 'dirt' for Golden_Allay.
+[17:36:38] [HARVEST] Quantity met (20 x 'dirt').
+[17:36:38] [BARITONE] All processes cancelled.
+[17:36:38] [DELIVER] Returning to Golden_Allay with the goods.
+[17:36:38] [BARITONE] Pathing to (151, 68, 10)
+[17:36:40] [BARITONE] Pathing to (151, 68, 10)
+[17:36:40] [BARITONE] All processes cancelled.
+[17:36:40] [INVENTORY] Dropped 18 x 'dirt' at my feet.
+[17:37:03] [CHAT] Task request from Golden_Allay: get 64 dirt blocks and put it in chest
+[17:37:03] [LLM] Querying 'llama3.1:8b' (IN_GAME) for Golden_Allay: get 64 dirt blocks and put it in chest
+[17:37:05] [LLM] chat="Alright, Golden Allay! I'll get you 64 dirt blocks. That's a lot of dirt!" action="mine dirt"
+[17:37:05] [BARITONE] Mining 'dirt'
+[17:37:05] [HARVEST] Plan started: gather 16 x 'dirt' for Golden_Allay.
+[17:37:24] [HARVEST] Quantity met (16 x 'dirt').
+[17:37:24] [BARITONE] All processes cancelled.
+[17:37:24] [DELIVER] Returning to Golden_Allay with the goods.
+```
+
+System Context: We are performing a critical architecture upgrade on the client-side Fabric mod "am-ai mod" (package: com.itdragclick.client.ai) for Minecraft version 26.2.
+
+Our recent runtime logs show severe bugs: the bot hardcodes harvest limits to 16/20 blocks even when asked for a stack, drops collected items at its feet instead of placing them in target chests, hallucinates incorrect item names like "log_acacia", and lacks advanced recursive tool crafting awareness.
+
+Please implement the following modules, command layers, and logic fixes across the codebase. Ensure all operations interacting with the physical world or input states run safely on the main Render/Game thread.
+
+---
+
+### MODULE 1: DYNAMIC CHAT-BASED WHITELIST ENGINE
+- Issue: The whitelist is static and hardcoded, making it impossible to add or remove friends at runtime.
+- Fix: Create a runtime Whitelist Manager (`AIWhitelistManager.java`) backed by a local configuration file at `config/am_ai_whitelist.json`.
+- Details:
+  - Implement an immediate chat command intercept hook that completely bypasses the LLM processing pipeline:
+    - "!AI whitelist add <player_name>": Instantly add the string to the whitelist file, reload the active memory cache, and announce in chat: "Added <player_name> to my protection whitelist!"
+    - "!AI whitelist remove <player_name>": Remove the name from the file, update the active combat filter, and announce: "Removed <player_name> from my whitelist. Watch your back!"
+  - Modify the active combat loop: Query this dynamic file per-tick. If a target entity matches an entry in the active whitelist array, the bot must completely abort attack operations.
+
+---
+
+### MODULE 2: PVP CHASE COLLISION & JUMP ASSIST
+- Issue: When chasing entities or fighting mobs, the bot gets stuck running into walls or solid blocks because it stands still or loses its jumping vectors.
+- Fix: Build a collision check into the per-tick combat tracking loop.
+- Details:
+  - When an attack target is active and the bot is closing the gap using manual directional keys or Baritone pathfinding, monitor the player's physical environment states.
+  - If `client.player.horizontalCollision` evaluates to `true` while the player is actively moving toward an enemy entity, programmatically trigger a manual jump execution: `client.player.jump();` to smoothly hurdle obstacles and clear blocks in its direct path without breaking combat tracking velocity.
+
+---
+
+### MODULE 3: RECURSIVE MULTI-TIER PROGRESSIVE CRAFTING TREE
+- Issue: The bot cannot handle complex item collection goals (e.g., getting an iron pickaxe) if it doesn't already possess the tools required to mine the resources.
+- Fix: Implement a progressive gathering state engine inside `AIStateManager.java`.
+- Details:
+  - If a player requests an item like an `iron_pickaxe`, the mod must check the player's current tool inventory and trace a recursive dependency calculation tree:
+    - Need Iron Pickaxe? -> Requires Iron Ingots + Sticks + Crafting Table.
+    - No Iron Ingots? -> Requires mining Iron Ore and Smelting them in a Furnace.
+    - Can't mine Iron Ore? -> Requires a Stone Pickaxe.
+    - No Stone Pickaxe? -> Requires Cobblestone + Sticks.
+    - Can't mine Cobblestone? -> Requires a Wooden Pickaxe.
+    - No Wooden Pickaxe? -> Requires Oak/Acacia Logs to craft planks and sticks.
+  - Break this down into programmatic state switches: `HARVESTING_WOOD` -> `CRAFTING_WOOD_PICK` -> `MINING_STONE` -> `CRAFTING_STONE_PICK` -> `MINING_IRON` -> `PLACING_FURNACE_AND_SMELTING` -> `CRAFTING_IRON_PICK`.
+  - Once the final requested item is crafted, proceed to the drop-off or delivery state.
+
+---
+
+### MODULE 4: REGISTRY VALIDATION & EXACT QUANTITY PARSING
+- Issue: The bot caps its gathering counts at 16 or 20 blocks due to hardcoded layout loops, and hallucinates incorrect namespace configurations (e.g., `log_acacia` instead of `minecraft:acacia_log`).
+- Fix: Integrate the official Minecraft identifier registry and dynamic integer evaluation.
+- Details:
+  - Quantity Resolution: Modify the JSON parsing data schema to pass a dedicated integer parameter (`"quantity"`). Completely strip out hardcoded block bounds. If a player asks for "64 dirt blocks" or "1 stack", the LLM must pass `64` to the harvest module, and the harvest engine must keep Baritone active until `inventory.countOf(targetItem) >= targetQuantity`.
+  - Game Registry Identifier Mapping: When a player asks for an item, the string must be evaluated against the native game registry: `Registries.ITEM.getIds()`. If the LLM generates an invalid tag, use a fuzzy lookup matrix to find the exact namespace token matching the item (e.g., if it maps to `acacia_log`, resolve it explicitly to `minecraft:acacia_log`).
+
+---
+
+### MODULE 5: FIXING THE CHEST DELIVERY ROUTINE
+- Issue: When given coordinates for a chest (`put it in chest 152 65 17`), the bot mines the block but drops the items at its feet, completely ignoring the location parameters.
+- Fix: Update the harvest completion callback handler.
+- Details:
+  - Modify the delivery state parser. The JSON model must output target coordinates whenever a chest drop-off is specified.
+  - Upon meeting the target resource quantity, do NOT immediately clear tasks or call `dropItem()`.
+  - Read the chest coordinates (`chestX, chestY, chestZ`). Tell Baritone to pathfind directly to those exact coordinates.
+  - Once positioned adjacent to the target chest block:
+    1. Look directly at the chest block position.
+    2. Dispatch a block interaction packet (Right-Click) to open the chest UI window screen handler.
+    3. Listen for the screen container open event (`client.currentScreen`).
+    4. Programmatically move the harvested item stack from the player inventory slots into the open chest container inventory slots using item click slot packets.
+    5. Close the container and announce completion in chat.
+
+---
+
+### MODULE 6: COMPREHENSIVE PERSONALITY CARD & ENFORCED JSON SCHEMAS
+Update the internal system configuration prompt payload string sent to Ollama to support dynamic quantities, chest tracking, and error-free registry matching:
+
+"You are 'am-ai', a highly intelligent, witty, self-aware AI companion playing Minecraft live with your friends (inspired by Neuro-sama). You have access to a dynamic whitelist memory file, a multi-tier tool crafting calculation tree, a Minecraft item registry validator, and a structural Baritone automation runner.
+
+When players talk to you in chat, interpret their goals, keep conversations natural and entertaining, and select mechanical actions using the following rules:
+1. QUANTITY RULES: Look at the player's message for specific numbers or stacks. Always output the exact number requested in the \"quantity\" field. If they say 'a stack', set quantity to 64. Never default to 16 or 20 blocks.
+2. CHEST DELIVERY RULES: If a player specifies target coordinates for a chest, you MUST extract the X, Y, and Z values and populate the \"chest_coords\" field. Do not tell the bot to drop items at its feet if a chest is provided.
+3. ITEM REGISTRY MATCHING: Map all item names to official Minecraft IDs. Never hallucinate names like 'mine_pigs' or 'log_acacia'. Use proper resource terms (e.g., 'minecraft:acacia_log', 'minecraft:iron_pickaxe'). If they ask for animal items like porkchops, set action to 'attack' and target the singular mob name (e.g., 'pig').
+
+Your output format must strictly remain a single, raw, unquoted valid JSON block:
+{
+  \"chat\": \"Your human-like, conversational, and witty response back to the player (keep it under 100 characters).\",
+  \"action\": \"The physical execution keyword.\",
+  \"target\": \"The official namespace identifier of the block, mob, or item (e.g., 'minecraft:acacia_log', 'pig').\",
+  \"quantity\": 64,
+  \"chest_coords\": \"152 65 17\"
+}
+
+Strictly allowed action values:
+- 'goto' (Navigates to exact coordinate coordinates; leave target empty, populate chest_coords with coordinates)
+- 'mine' (Mines blocks; populate target with verified ID and set the exact quantity requested)
+- 'follow' (Locks onto player; populate target with player name)
+- 'attack' (Hunts mobs/hostiles; populate target with singular entity name)
+- 'eat' (Triggers hunger consumption loops)
+- 'drop_items' (Drops current inventory items at feet; use if NO chest is specified)
+- 'stop' (Aborts all current tasks instantly)
+- '' (Empty string if just talking or maintaining an active harvesting chain)
+
+Never output notes, headers, or markdown styling text outside the raw JSON brackets."
+
+---
+
+Please combine these structural event tracking changes, progressive crafting states, dynamic whitelist commands, and chest interaction engines into clean, optimized, thread-safe Fabric Java modules!
