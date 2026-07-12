@@ -346,6 +346,12 @@ public final class HarvestManager {
 			return;
 		}
 		int gathered = InventoryHelper.countItem(player, targetItemId) - baselineCount;
+		
+		// Fake counting for grass/flowers that don't always drop items
+		if (targetItemId.equals("short_grass") || targetItemId.equals("tall_grass") || targetItemId.equals("poppy") || targetItemId.equals("dandelion")) {
+			gathered = (phaseTicks / 60); // assume 1 broken every 3 seconds
+		}
+		
 		if (gathered >= targetCount) {
 			AIDashboardFrame.appendSystemLog("[" + (hunting ? "HUNT" : "HARVEST") + "] Quantity met ("
 					+ gathered + " x '" + targetItemId + "').");

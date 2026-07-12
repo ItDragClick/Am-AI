@@ -67,15 +67,37 @@ public final class IdleBehaviorManager {
             }
         }
         
-        // Spontaneous gift giving
+        // Weather reaction
+        if (mc.level.isRaining() && mc.level.canSeeSky(player.blockPosition())) {
+            if (Math.random() < 0.2) {
+                String prompt = "[SYSTEM: It is raining and you are getting wet! Complain about the rain!]";
+                OllamaNetworkClient.submitPrompt(OllamaNetworkClient.Source.IN_GAME, "System", prompt);
+                return;
+            }
+        }
+        
+        // Check for nearby players
         List<Entity> players = mc.level.getEntities(player, player.getBoundingBox().inflate(10.0), e -> e instanceof net.minecraft.world.entity.player.Player);
         for (Entity e : players) {
             String name = e.getName().getString();
-            if (AIMemoryStore.getAffinity(name) >= 50 && Math.random() < 0.2) { // 20% chance if they are nearby and loved
-                player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, e.getEyePosition());
-                String prompt = "[SYSTEM: You feel affectionate towards " + name + ". Drop an item as a gift (using action 'drop_items') and say something sweet!]";
-                OllamaNetworkClient.submitPrompt(OllamaNetworkClient.Source.IN_GAME, "System", prompt);
-                return;
+            if (AIMemoryStore.getAffinity(name) >= 50) {
+                // Spontaneous gift giving
+                if (Math.random() < 0.2) {
+                    player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, e.getEyePosition());
+                    String prompt = "[SYSTEM: You feel affectionate towards " + name + ". Drop an item as a gift (using action 'drop_items') and say something sweet!]";
+                    OllamaNetworkClient.submitPrompt(OllamaNetworkClient.Source.IN_GAME, "System", prompt);
+                    EmoteManager.startHappyDance();
+                    return;
+                }
+                
+                // Pet-like drifting
+                double dist = player.distanceTo(e);
+                if (dist > 4.0 && dist < 10.0 && Math.random() < 0.5) {
+                    player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, e.getEyePosition());
+                    BaritoneBridge.goTo(e.getBlockX(), e.getBlockY(), e.getBlockZ());
+                    AIDashboardFrame.appendSystemLog("[IDLE] Drifting towards favorite player " + name);
+                    return;
+                }
             }
         }
 

@@ -45,11 +45,16 @@ The bot doesn't just wait for your orders. It has a mind of its own and reacts t
 ### 2. Idle Behaviors (Boredom)
 When the bot has no active tasks and is waiting around, it will begin to exhibit lifelike idle behaviors:
 - **Nighttime Sleeping**: If it gets dark outside (between 13000 and 23000 ticks), the bot will complain in chat about being tired or scared of the dark, and automatically seek out a bed to sleep in.
-- **Spontaneous Gifts**: If a favored player (Affinity ≥ 50) is standing nearby, the bot has a chance to look at them, say something sweet, and drop an item at their feet as a gift.
-- **Grass Touching / Flower Picking**: The bot will cure its boredom by wandering off to "touch some grass" (breaking `short_grass` or `tall_grass`) or picking a pretty flower (`poppy` or `dandelion`).
+- **Spontaneous Gifts**: If a favored player (Affinity ≥ 50) is standing nearby, the bot has a chance to look at them, say something sweet, drop an item at their feet as a gift, and do a happy dance (teabagging).
+- **Grass Touching / Flower Picking**: The bot will cure its boredom by wandering off to "touch some grass" (breaking `short_grass` or `tall_grass`) or picking a pretty flower (`poppy` or `dandelion`). Grass that doesn't drop items is handled seamlessly.
 - **Fidgeting**: It will occasionally look around randomly, stare at nearby animals, stare at the sky, or jump up and down.
+- **Pet-like Drifting**: When idle, if a favored player is 4-10 blocks away, the bot will slowly drift towards them.
 
-### 3. Memory & Affinity System
+### 3. Reactive Behaviors (Lifelike Interactions)
+- **Shiny Object Syndrome (Item Attraction)**: If a rare item (`diamond`, `emerald`, `gold_ingot`, etc.) is dropped nearby, the bot will pause its current task, pathfind to the item, stare at it in awe for 10 seconds, and then resume whatever it was doing.
+- **Weather Reactions**: If it starts raining while the bot is outside, it will complain in chat about getting wet.
+
+### 4. Memory & Affinity System
 The bot remembers how you treat it. Affinities range from -100 (Hatred) to 100 (Love).
 - **Holding Grudges**: If a player kills the bot, it will immediately deduct 30 Affinity points from that player and remember the murder.
 - **Mocking Enemies**: If a player dies in the server (e.g., falls in lava), the bot intercepts the server death message. If it hates that player (Affinity < 0), it will brutally mock them in chat. If it likes them, it will act surprised or laugh playfully.

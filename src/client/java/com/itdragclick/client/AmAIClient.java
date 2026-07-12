@@ -41,6 +41,8 @@ public class AmAIClient implements ClientModInitializer {
 		AIStateManager.register();
 		FarmManager.register();
 		CraftPlanner.register();
+		com.itdragclick.client.ai.ItemAttractionManager.register();
+		com.itdragclick.client.ai.EmoteManager.register();
 		com.itdragclick.client.ai.IdleBehaviorManager.register();
 		com.itdragclick.client.ai.ReactiveChatManager.register();
 		com.itdragclick.client.ai.SleepManager.register();

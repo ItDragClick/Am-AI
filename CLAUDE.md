@@ -80,7 +80,9 @@ When Minecraft boots up, the Client Initializer safely triggers the creation of 
 - **AIMemoryStore**: Persists short-term task recall and long-term player affinities to disk (`am-ai-memory.json`).
 - **ReactiveChatManager**: Responds to immediate visual/audio stimuli (damage, ores, chat mentions) without user prompting.
 - **SleepManager**: Automatically pathfinds to beds, sleeps when requested or when complaining at night, and wakes up.
-- **IdleBehaviorManager**: Manages autonomous actions when the bot is bored. Randomly triggers looking around, staring at animals, spontaneous gift-giving to favored players, or wandering to touch grass and pick flowers (dandelions/poppies). Also handles night-time sleep complaints.
+- **IdleBehaviorManager**: Manages autonomous actions when the bot is bored. Randomly triggers looking around, staring at animals, spontaneous gift-giving to favored players (with happy dance emotes), or wandering to touch grass and pick flowers (fake gathering counts if drops are missing). Also handles night-time sleep complaints, rain complaints, and pet-like drifting towards nearby favorite players.
+- **ItemAttractionManager**: Implements 'Shiny Object Syndrome'. Automatically scans for rare items (diamonds/emeralds/gold), preempts the current task to stare at them for 10 seconds, then resumes.
+- **EmoteManager**: Handles physical emotes like rapid sneaking (teabagging/happy dance).
 
 ## JSON Configuration & Persistence System
 
