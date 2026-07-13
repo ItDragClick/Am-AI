@@ -24,6 +24,9 @@ public class AIModSettings {
 	/** Weapon priority mode: "Swords", "Axes", or "Highest Damage". */
 	public String weaponPriority = "Swords";
 
+	/** Whether Baritone is allowed to break/place blocks while chasing targets in combat. */
+	public boolean combatAllowBlocks = false;
+
 	public AIModSettings copy() {
 		AIModSettings out = new AIModSettings();
 		out.endpointUrl = endpointUrl;
@@ -32,6 +35,7 @@ public class AIModSettings {
 		out.commandPrefix = commandPrefix;
 		out.active = active;
 		out.weaponPriority = weaponPriority;
+		out.combatAllowBlocks = combatAllowBlocks;
 		return out;
 	}
 }

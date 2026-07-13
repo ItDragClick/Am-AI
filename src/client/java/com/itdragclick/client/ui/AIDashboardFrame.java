@@ -61,6 +61,7 @@ public class AIDashboardFrame extends JFrame {
 	private final JTextField modelField = new JTextField(12);
 	private final JTextField prefixField = new JTextField(6);
 	private final JRadioButton activeIndicator = new JRadioButton("Active");
+	private final javax.swing.JCheckBox combatBlocksCheck = new javax.swing.JCheckBox("Combat Blocks (Break/Place)");
 	private final JLabel connectionStatus = new JLabel("Connection: untested");
 	private final JTextArea console = new JTextArea();
 	private final JTextField promptField = new JTextField();
@@ -327,8 +328,10 @@ public class AIDashboardFrame extends JFrame {
 		c.gridy = 2; c.gridx = 0;
 		panel.add(new JLabel("Weapon Priority:"), c);
 		weaponPriorityBox = new JComboBox<>(new String[]{"Swords", "Axes", "Highest Damage"});
-		c.gridx = 1; c.gridwidth = 3;
+		c.gridx = 1; c.gridwidth = 1;
 		panel.add(weaponPriorityBox, c);
+		c.gridx = 2; c.gridwidth = 2;
+		panel.add(combatBlocksCheck, c);
 
 		JButton saveBtn = new JButton("Save");
 		saveBtn.addActionListener(e -> onSaveConfig());
@@ -394,6 +397,7 @@ public class AIDashboardFrame extends JFrame {
 		modelField.setText(cfg.modelId);
 		prefixField.setText(cfg.commandPrefix);
 		weaponPriorityBox.setSelectedItem(cfg.weaponPriority);
+		combatBlocksCheck.setSelected(cfg.combatAllowBlocks);
 		syncActiveIndicator(cfg.active);
 	}
 
@@ -403,6 +407,7 @@ public class AIDashboardFrame extends JFrame {
 		cfg.modelId = modelField.getText().strip();
 		cfg.commandPrefix = prefixField.getText().strip().isEmpty() ? "!ai" : prefixField.getText().strip();
 		cfg.weaponPriority = (String) weaponPriorityBox.getSelectedItem();
+		cfg.combatAllowBlocks = combatBlocksCheck.isSelected();
 		prefixField.setText(cfg.commandPrefix);
 		SettingsPersistenceManager.update(cfg);
 		appendLater("Configuration saved.");

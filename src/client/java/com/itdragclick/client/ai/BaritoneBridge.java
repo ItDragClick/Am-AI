@@ -39,13 +39,19 @@ public final class BaritoneBridge {
 
 	/** Pathfinds to absolute block coordinates via CustomGoalProcess + GoalBlock. */
 	public static void goTo(int x, int y, int z) {
+		goToCombat(x, y, z, true);
+	}
+
+	public static void goToCombat(int x, int y, int z, boolean allowBlocks) {
 		if (!checkPresent("goto " + x + " " + y + " " + z)) {
 			return;
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			BaritoneAPI.getSettings().allowPlace.value = allowBlocks;
+			BaritoneAPI.getSettings().allowBreak.value = allowBlocks;
 			baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(x, y, z));
-			AIDashboardFrame.appendSystemLog("[BARITONE] Pathing to (" + x + ", " + y + ", " + z + ")");
+			AIDashboardFrame.appendSystemLog("[BARITONE] Pathing to (" + x + ", " + y + ", " + z + ") (blocks=" + allowBlocks + ")");
 		} catch (LinkageError e) {
 			reportObfuscatedJar("goto", e);
 		}
@@ -59,6 +65,8 @@ public final class BaritoneBridge {
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			BaritoneAPI.getSettings().allowPlace.value = true;
+			BaritoneAPI.getSettings().allowBreak.value = true;
 			baritone.getMineProcess().mineByName(id);
 			AIDashboardFrame.appendSystemLog("[BARITONE] Mining '" + id + "'");
 		} catch (LinkageError e) {
@@ -73,6 +81,8 @@ public final class BaritoneBridge {
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			BaritoneAPI.getSettings().allowPlace.value = true;
+			BaritoneAPI.getSettings().allowBreak.value = true;
 			baritone.getMineProcess().mineByName(blockIds);
 			AIDashboardFrame.appendSystemLog("[BARITONE] Mining any of: " + String.join(", ", blockIds));
 		} catch (LinkageError e) {
@@ -91,6 +101,8 @@ public final class BaritoneBridge {
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			BaritoneAPI.getSettings().allowPlace.value = true;
+			BaritoneAPI.getSettings().allowBreak.value = true;
 			baritone.getBuilderProcess().clearArea(new BlockPos(x1, y1, z1), new BlockPos(x2, y2, z2));
 			AIDashboardFrame.appendSystemLog("[BARITONE] Clearing box (" + x1 + ", " + y1 + ", " + z1
 					+ ") -> (" + x2 + ", " + y2 + ", " + z2 + ")");
@@ -107,6 +119,8 @@ public final class BaritoneBridge {
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			BaritoneAPI.getSettings().allowPlace.value = true;
+			BaritoneAPI.getSettings().allowBreak.value = true;
 			baritone.getFollowProcess().follow(entity ->
 					entity.getName().getString().equalsIgnoreCase(targetPlayer));
 			AIDashboardFrame.appendSystemLog("[BARITONE] Following '" + targetPlayer + "'");

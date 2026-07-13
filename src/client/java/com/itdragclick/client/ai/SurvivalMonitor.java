@@ -775,7 +775,8 @@ public final class SurvivalMonitor {
 				releaseMovementKeys(mc);
 				if (chaseRepathCooldown == 0) {
 					BlockPos pos = target.blockPosition();
-					BaritoneBridge.goTo(pos.getX(), pos.getY(), pos.getZ());
+					com.itdragclick.client.config.AIModSettings cfg = com.itdragclick.client.config.SettingsPersistenceManager.get();
+					BaritoneBridge.goToCombat(pos.getX(), pos.getY(), pos.getZ(), cfg.combatAllowBlocks);
 					chaseRepathCooldown = CHASE_REPATH_INTERVAL_TICKS;
 				}
 			} else {
