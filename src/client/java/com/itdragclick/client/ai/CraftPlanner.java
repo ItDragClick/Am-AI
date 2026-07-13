@@ -116,9 +116,11 @@ public final class CraftPlanner {
     private static void onTick(Minecraft mc) {
         LocalPlayer player = mc.player;
         if (!active || player == null || mc.level == null) return;
-        
         String step = resolveDeepestNeed(player, target, 1);
         if (!step.equals(currentStepName)) {
+            if (player.containerMenu != null && player.containerMenu != player.inventoryMenu) {
+                player.closeContainer();
+            }
             currentStepName = step;
             stepTicks = 0;
             miningIssued = false;
@@ -165,6 +167,10 @@ public final class CraftPlanner {
             int missing = requiredCount - count(player, itemNeeded);
             if (count(player, smelt.input) < missing) return resolveDeepestNeed(player, smelt.input, missing);
             if (count(player, "furnace") == 0 && placedFurnace == null) return resolveDeepestNeed(player, "furnace", 1);
+            
+            int fuelCount = countPlanks(player) + countLogs(player);
+            if (fuelCount == 0) return resolveDeepestNeed(player, "oak_log", 1);
+            
             return "smelt:" + itemNeeded;
         }
         
@@ -263,10 +269,6 @@ public final class CraftPlanner {
             if (!furnace.slots.get(2).getItem().isEmpty()) {
                 quickMove(mc, player, furnace, 2);
             }
-            if (count(player, targetId) > 0) {
-                player.closeContainer();
-                return;
-            }
             if (furnace.slots.get(0).getItem().isEmpty()) {
                 int raw = findMenuSlot(furnace, s -> matches(s, recipe.input()), 3);
                 if (raw >= 0) quickMoveTo(mc, player, furnace, raw, 0);
@@ -310,8 +312,10 @@ public final class CraftPlanner {
             if (mc.level.getBlockState(spot).isAir() && !mc.level.getBlockState(spot.below()).isAir()) {
                 BlockPos ground = spot.below();
                 player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(ground));
+                player.setShiftKeyDown(true);
                 mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND,
                         new BlockHitResult(Vec3.atCenterOf(ground), Direction.UP, ground, false));
+                player.setShiftKeyDown(false);
                 remember.accept(spot);
                 return;
             }
@@ -319,6 +323,9 @@ public final class CraftPlanner {
     }
 
     private static void finish(Minecraft mc, LocalPlayer player, boolean success) {
+        if (player.containerMenu != null && player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
         if (success) {
             AIDashboardFrame.appendSystemLog("[CRAFT] '" + target + "' crafted. Plan complete.");
             if (requester != null) {
@@ -352,7 +359,18 @@ public final class CraftPlanner {
     }
 
     private static int count(LocalPlayer player, String itemId) {
-        return InventoryHelper.countItem(player, itemId);
+        int total = InventoryHelper.countItem(player, itemId);
+        if (player.containerMenu != null && player.containerMenu != player.inventoryMenu) {
+            for (net.minecraft.world.inventory.Slot slot : player.containerMenu.slots) {
+                if (slot.container != player.getInventory()) {
+                    ItemStack stack = slot.getItem();
+                    if (!stack.isEmpty() && InventoryHelper.itemIdOf(stack).equals(itemId)) {
+                        total += stack.getCount();
+                    }
+                }
+            }
+        }
+        return total;
     }
 
     private static int countLogs(LocalPlayer player) {
@@ -367,6 +385,16 @@ public final class CraftPlanner {
             ItemStack stack = player.getInventory().getItem(i);
             if (!stack.isEmpty() && InventoryHelper.itemIdOf(stack).endsWith("_planks")) {
                 total += stack.getCount();
+            }
+        }
+        if (player.containerMenu != null && player.containerMenu != player.inventoryMenu) {
+            for (net.minecraft.world.inventory.Slot slot : player.containerMenu.slots) {
+                if (slot.container != player.getInventory()) {
+                    ItemStack stack = slot.getItem();
+                    if (!stack.isEmpty() && InventoryHelper.itemIdOf(stack).endsWith("_planks")) {
+                        total += stack.getCount();
+                    }
+                }
             }
         }
         return total;
