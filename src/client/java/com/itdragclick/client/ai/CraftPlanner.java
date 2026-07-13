@@ -165,8 +165,15 @@ public final class CraftPlanner {
         if (SMELT.containsKey(itemNeeded)) {
             SmeltRecipe smelt = SMELT.get(itemNeeded);
             int missing = requiredCount - count(player, itemNeeded);
-            if (count(player, smelt.input) < missing) return resolveDeepestNeed(player, smelt.input, missing);
-            if (count(player, "furnace") == 0 && placedFurnace == null) return resolveDeepestNeed(player, "furnace", 1);
+            if (count(player, smelt.input) < missing) {
+                int req = missing;
+                if (smelt.input.startsWith("raw_")) req += 2;
+                return resolveDeepestNeed(player, smelt.input, req);
+            }
+            if (count(player, "furnace") == 0 && (placedFurnace == null || !player.level().getBlockState(placedFurnace).is(net.minecraft.world.level.block.Blocks.FURNACE))) {
+                placedFurnace = findNearbyBlock(player, net.minecraft.world.level.block.Blocks.FURNACE, 8);
+                if (placedFurnace == null) return resolveDeepestNeed(player, "furnace", 1);
+            }
             
             int fuelCount = countPlanks(player) + countLogs(player);
             if (fuelCount == 0) return resolveDeepestNeed(player, "oak_log", 1);
@@ -194,7 +201,9 @@ public final class CraftPlanner {
             }
             
             if (recipe.needsTable() && !hasTableAccess(player)) {
-                return resolveDeepestNeed(player, "crafting_table", 1);
+                if (count(player, "crafting_table") == 0) {
+                    return resolveDeepestNeed(player, "crafting_table", 1);
+                }
             }
             return "craft:" + itemNeeded;
         }
@@ -341,9 +350,28 @@ public final class CraftPlanner {
         AIStateManager.taskCompleted();
     }
 
+    private static BlockPos findNearbyBlock(LocalPlayer player, net.minecraft.world.level.block.Block block, int radius) {
+        BlockPos playerPos = player.blockPosition();
+        for (BlockPos pos : BlockPos.betweenClosed(playerPos.offset(-radius, -radius, -radius), playerPos.offset(radius, radius, radius))) {
+            if (player.level().getBlockState(pos).is(block)) {
+                return pos.immutable();
+            }
+        }
+        return null;
+    }
+
     private static boolean hasTableAccess(LocalPlayer player) {
-        return count(player, "crafting_table") > 0
-                || (placedTable != null && !player.level().getBlockState(placedTable).isAir());
+        if (player.containerMenu instanceof CraftingMenu) return true;
+        if (placedTable != null && player.level().getBlockState(placedTable).is(net.minecraft.world.level.block.Blocks.CRAFTING_TABLE)
+                && placedTable.closerToCenterThan(player.position(), 4.0)) {
+            return true;
+        }
+        BlockPos found = findNearbyBlock(player, net.minecraft.world.level.block.Blocks.CRAFTING_TABLE, 8);
+        if (found != null) {
+            placedTable = found;
+            return true;
+        }
+        return false;
     }
 
     private static boolean hasPickaxeTier(LocalPlayer player, String needed) {
@@ -361,8 +389,12 @@ public final class CraftPlanner {
     private static int count(LocalPlayer player, String itemId) {
         int total = InventoryHelper.countItem(player, itemId);
         if (player.containerMenu != null && player.containerMenu != player.inventoryMenu) {
-            for (net.minecraft.world.inventory.Slot slot : player.containerMenu.slots) {
+            for (int i = 0; i < player.containerMenu.slots.size(); i++) {
+                net.minecraft.world.inventory.Slot slot = player.containerMenu.slots.get(i);
                 if (slot.container != player.getInventory()) {
+                    if (player.containerMenu instanceof net.minecraft.world.inventory.AbstractFurnaceMenu && i == 2) continue;
+                    if (player.containerMenu instanceof net.minecraft.world.inventory.CraftingMenu && i == 0) continue;
+                    
                     ItemStack stack = slot.getItem();
                     if (!stack.isEmpty() && InventoryHelper.itemIdOf(stack).equals(itemId)) {
                         total += stack.getCount();
