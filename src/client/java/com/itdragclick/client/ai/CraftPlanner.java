@@ -117,7 +117,7 @@ public final class CraftPlanner {
         LocalPlayer player = mc.player;
         if (!active || player == null || mc.level == null) return;
         
-        String step = resolveDeepestNeed(player, target);
+        String step = resolveDeepestNeed(player, target, 1);
         if (!step.equals(currentStepName)) {
             currentStepName = step;
             stepTicks = 0;
@@ -157,20 +157,21 @@ public final class CraftPlanner {
         }
     }
 
-    private static String resolveDeepestNeed(LocalPlayer player, String itemNeeded) {
-        if (count(player, itemNeeded) > 0) return "done";
+    private static String resolveDeepestNeed(LocalPlayer player, String itemNeeded, int requiredCount) {
+        if (count(player, itemNeeded) >= requiredCount) return "done";
         
         if (SMELT.containsKey(itemNeeded)) {
             SmeltRecipe smelt = SMELT.get(itemNeeded);
-            if (count(player, smelt.input) == 0) return resolveDeepestNeed(player, smelt.input);
-            if (count(player, "furnace") == 0 && placedFurnace == null) return resolveDeepestNeed(player, "furnace");
+            int missing = requiredCount - count(player, itemNeeded);
+            if (count(player, smelt.input) < missing) return resolveDeepestNeed(player, smelt.input, missing);
+            if (count(player, "furnace") == 0 && placedFurnace == null) return resolveDeepestNeed(player, "furnace", 1);
             return "smelt:" + itemNeeded;
         }
         
         if (RECIPES.containsKey(itemNeeded) || itemNeeded.equals("#planks")) {
             if (itemNeeded.equals("#planks")) {
-                if (countPlanks(player) > 0) return "done";
-                if (countLogs(player) == 0) return resolveDeepestNeed(player, "oak_log");
+                if (countPlanks(player) >= requiredCount) return "done";
+                if (countLogs(player) == 0) return resolveDeepestNeed(player, "oak_log", 1);
                 return "craft_planks";
             }
             
@@ -183,18 +184,18 @@ public final class CraftPlanner {
             for (Map.Entry<String, Integer> req : reqs.entrySet()) {
                 String subItem = req.getKey();
                 int current = subItem.equals("#planks") ? countPlanks(player) : count(player, subItem);
-                if (current < req.getValue()) return resolveDeepestNeed(player, subItem);
+                if (current < req.getValue()) return resolveDeepestNeed(player, subItem, req.getValue());
             }
             
             if (recipe.needsTable() && !hasTableAccess(player)) {
-                return resolveDeepestNeed(player, "crafting_table");
+                return resolveDeepestNeed(player, "crafting_table", 1);
             }
             return "craft:" + itemNeeded;
         }
         
         String requiredPick = HarvestManager.getRequiredPickaxe(itemNeeded);
         if (requiredPick != null && !hasPickaxeTier(player, requiredPick)) {
-            return resolveDeepestNeed(player, requiredPick);
+            return resolveDeepestNeed(player, requiredPick, 1);
         }
         
         return "mine:" + itemNeeded;
