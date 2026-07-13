@@ -163,11 +163,6 @@ public final class IdleBehaviorManager {
                 AIDashboardFrame.appendSystemLog("[IDLE] Starting autonomous exploring/flower picking: " + target);
                 
                 String chatMsg = "";
-                if (target.equals("dandelion") || target.equals("poppy")) {
-                    chatMsg = "Ooh, a pretty flower!";
-                } else {
-                    chatMsg = "I'm bored, I'm gonna go touch some grass!";
-                }
                 
                 // Route through AIActionBridge to use standard systems
                 OllamaNetworkClient.AIDecision dec = new OllamaNetworkClient.AIDecision(
