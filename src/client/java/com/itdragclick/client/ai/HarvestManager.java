@@ -175,6 +175,8 @@ public final class HarvestManager {
 			AIDashboardFrame.appendSystemLog("  3. Deliver"
 					+ (chest != null ? " to chest (" + chest[0] + ", " + chest[1] + ", " + chest[2] + ")" : " to " + requestedBy));
 			announce(mc, "I need a " + neededPick + " first — crafting one, then I'll get your " + countItem + "!");
+			phase = Phase.MINING;
+			phaseTicks = 0;
 			AIStateManager.TaskContext pending = captureAndPause();
 			com.itdragclick.client.ai.AIStateManager.pushTask(pending);
 			CraftPlanner.start(neededPick, null, false);
