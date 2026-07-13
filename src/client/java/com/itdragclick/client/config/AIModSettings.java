@@ -10,7 +10,10 @@ public class AIModSettings {
 	public String endpointUrl = "http://localhost:11434/api/generate";
 
 	/** Ollama model tag to query. */
-	public String modelId = "llama3.1:8b";
+	public String modelId = "deepseek-r1:8b";
+
+	/** Ollama embedding model tag. */
+	public String embeddingModelId = "nomic-embed-text";
 
 	/** In-game chat prefix that triggers the AI, e.g. "!AI <prompt>". */
 	public String commandPrefix = "!AI";
@@ -25,6 +28,7 @@ public class AIModSettings {
 		AIModSettings out = new AIModSettings();
 		out.endpointUrl = endpointUrl;
 		out.modelId = modelId;
+		out.embeddingModelId = embeddingModelId;
 		out.commandPrefix = commandPrefix;
 		out.active = active;
 		out.weaponPriority = weaponPriority;

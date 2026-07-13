@@ -60,11 +60,11 @@ public final class IdleBehaviorManager {
             }
         }
 
-        // Trigger an idle behavior if we've been idle for 20 seconds and cooldown is finished.
-        if (idleTicks > 4000 && actionCooldown == 0) {
+        // Trigger an idle behavior if we've been idle for 30 seconds and cooldown is finished.
+        if (idleTicks > 600 && actionCooldown == 0) {
             triggerIdleBehavior(mc, player);
-            // Cooldown for 10-30 seconds before doing something else randomly.
-            actionCooldown = 200 + (int)(Math.random() * 400); 
+            // Cooldown for 30-60 seconds before doing something else randomly.
+            actionCooldown = 600 + (int)(Math.random() * 600); 
         }
     }
 

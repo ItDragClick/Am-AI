@@ -186,7 +186,7 @@ public final class OllamaNetworkClient {
 						
 						// Fire-and-forget vector storage for long-term RAG memory
 						String memoryText = "Player '" + senderName + "' said: " + prompt + " -> Bot replied: " + result.chat();
-						getEmbedding(cfg.endpointUrl, cfg.modelId, memoryText).thenAccept(vec -> {
+						getEmbedding(cfg.endpointUrl, cfg.embeddingModelId, memoryText).thenAccept(vec -> {
 							if (vec.length > 0) {
 								com.itdragclick.client.memory.VectorDB.addMemory(memoryText, vec);
 							}
@@ -237,7 +237,7 @@ public final class OllamaNetworkClient {
 	public static CompletableFuture<AIDecision> queryOllama(AIModSettings cfg, Source source, String senderName, String prompt) {
 		CompletableFuture<String> memoryFuture;
 		if (source == Source.IN_GAME) {
-			memoryFuture = getEmbedding(cfg.endpointUrl, cfg.modelId, prompt).thenApply(vec -> {
+			memoryFuture = getEmbedding(cfg.endpointUrl, cfg.embeddingModelId, prompt).thenApply(vec -> {
 				if (vec.length > 0) {
 					java.util.List<String> memories = com.itdragclick.client.memory.VectorDB.search(vec, 3);
 					if (!memories.isEmpty()) {
