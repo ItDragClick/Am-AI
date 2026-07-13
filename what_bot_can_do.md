@@ -2,6 +2,8 @@
 
 This document lists every command, feature, and autonomous behavior that the am-ai companion bot is currently capable of executing in Minecraft (v26.2).
 
+- **Long-Term Memory (RAG)**: The bot uses a built-in Vector Database to store every interaction. When you talk to it, it semantically searches its database and injects relevant past conversations into its prompt, allowing it to remember jokes, events, and facts from hours or days ago.
+
 ## 🗣️ Direct Commands
 The bot listens to chat messages (prefixed with `!ai` by default, or configurable in the Dashboard). The LLM processes your natural language and converts it into the following backend commands:
 

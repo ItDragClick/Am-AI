@@ -44,7 +44,7 @@ public final class OllamaNetworkClient {
 	 * {@link #STRICT_PROMPT} instead.
 	 */
 	public static final String PERSONA_PROMPT = """
-			You are 'am-ai', a witty, highly intelligent, chaotic, and self-aware AI companion playing Minecraft with your friends (inspired by VTubers like Neuro-sama). You have access to a LIFO task stack queue, deep world telemetry, a structural Baritone automation system, and full block/item registries.
+			You are 'grape', a witty, highly intelligent, chaotic, and self-aware AI companion playing Minecraft with your friends (inspired by VTubers like Neuro-sama). You have access to a LIFO task stack queue, deep world telemetry, a structural Baritone automation system, and full block/item registries.
 
 			When answering, read the system variables (current_xyz, world_age_days, looking_at, nearby_entities, health). If a player asks where you are or what day it is, look at these values and reply naturally with the correct figures in your chat response. Hold fun conversations, tease your friends, and select mechanical actions using the strict rules below.
 
@@ -183,9 +183,51 @@ public final class OllamaNetworkClient {
 					if (source == Source.IN_GAME) {
 						String canonical = AIActionBridge.canonicalizeAction(result.action());
 						AIMemoryStore.recordInteraction(senderName, prompt, canonical != null ? canonical : "");
+						
+						// Fire-and-forget vector storage for long-term RAG memory
+						String memoryText = "Player '" + senderName + "' said: " + prompt + " -> Bot replied: " + result.chat();
+						getEmbedding(cfg.endpointUrl, cfg.modelId, memoryText).thenAccept(vec -> {
+							if (vec.length > 0) {
+								com.itdragclick.client.memory.VectorDB.addMemory(memoryText, vec);
+							}
+						});
 					}
 					AIActionBridge.execute(result, senderName);
 				});
+	}
+
+	public static CompletableFuture<float[]> getEmbedding(String endpointUrl, String model, String text) {
+		JsonObject payload = new JsonObject();
+		payload.addProperty("model", model);
+		payload.addProperty("prompt", text);
+
+		try {
+			// Extract host from endpointUrl (e.g. http://127.0.0.1:11434/api/generate -> http://127.0.0.1:11434/api/embeddings)
+			URI uri = URI.create(endpointUrl.replace("/generate", "/embeddings"));
+			HttpRequest request = HttpRequest.newBuilder()
+					.uri(uri)
+					.timeout(Duration.ofSeconds(30))
+					.header("Content-Type", "application/json")
+					.POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+					.build();
+
+			return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+					.thenApply(response -> {
+						if (response.statusCode() == 200) {
+							try {
+								var array = JsonParser.parseString(response.body()).getAsJsonObject().getAsJsonArray("embedding");
+								float[] vec = new float[array.size()];
+								for (int i = 0; i < array.size(); i++) {
+									vec[i] = array.get(i).getAsFloat();
+								}
+								return vec;
+							} catch (Exception ignored) {}
+						}
+						return new float[0];
+					}).exceptionally(e -> new float[0]);
+		} catch (Exception e) {
+			return CompletableFuture.completedFuture(new float[0]);
+		}
 	}
 
 	/**
@@ -193,36 +235,50 @@ public final class OllamaNetworkClient {
 	 * two-key JSON reply, falling back to {@link #FALLBACK} on malformed data.
 	 */
 	public static CompletableFuture<AIDecision> queryOllama(AIModSettings cfg, Source source, String senderName, String prompt) {
-		// Split persona: expressive companion in-game, strict terminal for
-		// dashboard/system. Memory bank injected into every system window.
-		String basePrompt = source == Source.IN_GAME ? PERSONA_PROMPT : STRICT_PROMPT;
-		JsonObject payload = new JsonObject();
-		payload.addProperty("model", cfg.modelId);
-		payload.addProperty("system", basePrompt + AIMemoryStore.promptContext() + telemetryContext());
-		payload.addProperty("prompt", "Player '" + senderName + "' says: " + prompt);
-		payload.addProperty("stream", false);
-		// Ask Ollama to constrain decoding to valid JSON where supported.
-		payload.addProperty("format", "json");
-
-		HttpRequest request;
-		try {
-			request = HttpRequest.newBuilder()
-					.uri(URI.create(cfg.endpointUrl))
-					.timeout(Duration.ofSeconds(90))
-					.header("Content-Type", "application/json")
-					.POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
-					.build();
-		} catch (Exception e) {
-			return CompletableFuture.failedFuture(e);
+		CompletableFuture<String> memoryFuture;
+		if (source == Source.IN_GAME) {
+			memoryFuture = getEmbedding(cfg.endpointUrl, cfg.modelId, prompt).thenApply(vec -> {
+				if (vec.length > 0) {
+					java.util.List<String> memories = com.itdragclick.client.memory.VectorDB.search(vec, 3);
+					if (!memories.isEmpty()) {
+						return "\n\nRECOVERED LONG-TERM MEMORIES (Use this context if relevant):\n- " + String.join("\n- ", memories);
+					}
+				}
+				return "";
+			});
+		} else {
+			memoryFuture = CompletableFuture.completedFuture("");
 		}
 
-		return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-				.thenApply(response -> {
-					if (response.statusCode() != 200) {
-						throw new IllegalStateException("HTTP " + response.statusCode() + " from Ollama: " + truncate(response.body(), 200));
-					}
-					return parseDecision(response.body());
-				});
+		return memoryFuture.thenCompose(longTermMemory -> {
+			String basePrompt = source == Source.IN_GAME ? PERSONA_PROMPT : STRICT_PROMPT;
+			JsonObject payload = new JsonObject();
+			payload.addProperty("model", cfg.modelId);
+			payload.addProperty("system", basePrompt + AIMemoryStore.promptContext() + telemetryContext() + longTermMemory);
+			payload.addProperty("prompt", "Player '" + senderName + "' says: " + prompt);
+			payload.addProperty("stream", false);
+			payload.addProperty("format", "json");
+
+			HttpRequest request;
+			try {
+				request = HttpRequest.newBuilder()
+						.uri(URI.create(cfg.endpointUrl))
+						.timeout(Duration.ofSeconds(90))
+						.header("Content-Type", "application/json")
+						.POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+						.build();
+			} catch (Exception e) {
+				return CompletableFuture.failedFuture(e);
+			}
+
+			return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+					.thenApply(response -> {
+						if (response.statusCode() != 200) {
+							throw new IllegalStateException("HTTP " + response.statusCode() + " from Ollama: " + truncate(response.body(), 200));
+						}
+						return parseDecision(response.body());
+					});
+		});
 	}
 
 	/**
