@@ -70,8 +70,10 @@ public final class PlayerInteractionManager {
 
         interactionTicks++;
 
-        // Failsafe timeout for any interaction (30 seconds)
-        if (interactionTicks > 600) {
+        // Failsafe timeout: hide-and-seek is a longer game (2 min), the
+        // quick interactions cap at 30 seconds.
+        int failsafe = currentInteraction == InteractionType.HIDING ? 2400 : 600;
+        if (interactionTicks > failsafe) {
             cancel();
             return;
         }
@@ -88,7 +90,7 @@ public final class PlayerInteractionManager {
         if (phase == 0) {
             if (player.distanceToSqr(targetPlayer) > 4.0) {
                 if (interactionTicks % 20 == 1) {
-                    BaritoneBridge.goTo(targetPlayer.getBlockX(), targetPlayer.getBlockY(), targetPlayer.getBlockZ());
+                    BaritoneBridge.goToIdle(targetPlayer.getBlockX(), targetPlayer.getBlockY(), targetPlayer.getBlockZ());
                 }
             } else {
                 BaritoneBridge.stopQuietly();
@@ -111,12 +113,12 @@ public final class PlayerInteractionManager {
         if (phase == 0) {
             if (player.distanceToSqr(targetPlayer) > 4.0) {
                 if (interactionTicks % 20 == 1) {
-                    BaritoneBridge.goTo(targetPlayer.getBlockX(), targetPlayer.getBlockY(), targetPlayer.getBlockZ());
+                    BaritoneBridge.goToIdle(targetPlayer.getBlockX(), targetPlayer.getBlockY(), targetPlayer.getBlockZ());
                 }
             } else {
                 BaritoneBridge.stopQuietly();
                 phase = 1;
-                interactionTicks = 0; 
+                interactionTicks = 0;
             }
         } else if (phase == 1) {
             // copy facing and actions
@@ -150,7 +152,7 @@ public final class PlayerInteractionManager {
             int tz = player.getBlockZ() + (int)(Math.sin(angle) * dist);
             
             hideSpot = new BlockPos(tx, player.getBlockY(), tz);
-            BaritoneBridge.goTo(tx, player.getBlockY(), tz);
+            BaritoneBridge.goToIdle(tx, player.getBlockY(), tz);
             phase = 1;
             interactionTicks = 0;
         } else if (phase == 1) {
@@ -166,9 +168,23 @@ public final class PlayerInteractionManager {
         } else if (phase == 2) {
             mc.options.keyShift.setDown(true); // sneak to hide
             player.lookAt(EntityAnchorArgument.Anchor.EYES, targetPlayer.getEyePosition());
-            if (interactionTicks > 300) { // hide for 15 seconds
+
+            // Seeker got within 4 blocks: found! Congratulate + feelings bonus.
+            if (player.distanceTo(targetPlayer) < 4.0) {
                 mc.options.keyShift.setDown(false);
-                announce(mc, "Okay I'm bored of hiding.");
+                String name = targetPlayer.getName().getString();
+                String[] msgs = {"You found me!", "Aww, good eyes!", "Okay okay, you win!", "How did you see me?!"};
+                announce(mc, msgs[(int)(Math.random() * msgs.length)]);
+                com.itdragclick.client.memory.PlayerRelationshipDB.modifyScore(name, 5);
+                AIDashboardFrame.appendSystemLog("[INTERACT] " + name + " found me in hide-and-seek! Score +5 (now "
+                        + com.itdragclick.client.memory.PlayerRelationshipDB.getScore(name) + ").");
+                cancel();
+                return;
+            }
+
+            if (interactionTicks > 1200) { // hide for up to 60 seconds
+                mc.options.keyShift.setDown(false);
+                announce(mc, "You never found me! I win!");
                 cancel();
             }
         }

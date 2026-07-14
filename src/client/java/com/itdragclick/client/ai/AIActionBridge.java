@@ -26,7 +26,8 @@ public final class AIActionBridge {
 	public static final java.util.Set<String> ALLOWED_VERBS = java.util.Set.of(
 			"goto", "mine", "mine_area", "follow", "follow_protect", "attack", "eat",
 			"drop_items", "deposit_chest", "farm", "sneak", "unsneak", "click_respawn",
-			"cancel", "stop", "equip", "sleep", "leave_bed", "craft");
+			"cancel", "stop", "equip", "sleep", "leave_bed", "craft",
+			"turn", "walk", "break", "place", "equip_offhand", "unequip");
 
 	/** Verbs small models substitute for "attack" when told to kill things. */
 	private static final java.util.Set<String> ATTACK_ALIASES = java.util.Set.of(
@@ -148,6 +149,24 @@ public final class AIActionBridge {
 		int quantity = decision.quantity();
 		int[] chest = parseCoords(decision.chestCoords(), senderName);
 
+		com.itdragclick.client.config.AIModSettings cfg = com.itdragclick.client.config.SettingsPersistenceManager.get();
+
+		if ("System".equals(senderName)) {
+			// Goal-target breaking ('mine <flower>', 'farm' crop harvesting) is
+			// the point of the idle action, not incidental clearing — it stays
+			// allowed. Only arbitrary breaking/placing needs the idle toggles.
+			// (Limitation: Baritone's mine process may still clear obstacle
+			// blocks while pathing to the goal — Baritone settings are global.)
+			if ((verb.equals("mine_area") || verb.equals("break")) && !cfg.allowIdleBlockBreak) {
+				AIDashboardFrame.appendSystemLog("[IDLE] System tried to " + verb + " but idle breaking is disabled.");
+				return;
+			}
+			if (verb.equals("place") && !cfg.allowIdleBlockPlace) {
+				AIDashboardFrame.appendSystemLog("[IDLE] System tried to place blocks but idle placing is disabled.");
+				return;
+			}
+		}
+
 		switch (verb) {
 			case "goto" -> {
 				// Coordinates can arrive inline, in chest_coords, or in the
@@ -261,6 +280,43 @@ public final class AIActionBridge {
 				Minecraft mc = Minecraft.getInstance();
 				if (mc.player != null) {
 					InventoryHelper.equipArmor(mc, mc.player);
+				}
+			}
+			case "equip_offhand" -> {
+				String raw = argOr(tokens, decision.target());
+				if (raw != null) {
+					String resolved = RegistryResolver.resolveItem(raw);
+					if (resolved != null && Minecraft.getInstance().player != null) {
+						InventoryHelper.equipOffhand(Minecraft.getInstance(), Minecraft.getInstance().player, resolved);
+					}
+				}
+			}
+			case "unequip" -> {
+				if (Minecraft.getInstance().player != null) {
+					InventoryHelper.unequipArmor(Minecraft.getInstance(), Minecraft.getInstance().player);
+				}
+			}
+			case "turn" -> {
+				float pitch = tokens.length >= 2 ? Float.parseFloat(tokens[1]) : 0f;
+				float yaw = tokens.length >= 3 ? Float.parseFloat(tokens[2]) : 0f;
+				int speed = tokens.length >= 4 ? Integer.parseInt(tokens[3]) : 20;
+				ActionHelper.turnHead(pitch, yaw, speed);
+			}
+			case "walk" -> {
+				String dir = tokens.length >= 2 ? tokens[1] : "forward";
+				int dist = tokens.length >= 3 ? Integer.parseInt(tokens[2]) : 1;
+				ActionHelper.walk(dir, dist);
+			}
+			case "break" -> {
+				int[] pos = tokens.length >= 4 ? parseInts(tokens, 1, 3, action) : chest;
+				if (pos != null) {
+					ActionHelper.breakBlock(pos[0], pos[1], pos[2], decision.durationSeconds());
+				}
+			}
+			case "place" -> {
+				String block = argOr(tokens, decision.target());
+				if (block != null) {
+					ActionHelper.placeBlock(block, decision.durationSeconds());
 				}
 			}
 			case "sleep" -> SleepManager.startSleep();

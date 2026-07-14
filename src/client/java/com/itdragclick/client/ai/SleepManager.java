@@ -42,7 +42,7 @@ public final class SleepManager {
         if (bestBed != null) {
             targetBed = bestBed;
             AIDashboardFrame.appendSystemLog("[SLEEP] Found bed at " + targetBed.toShortString() + ", pathing to it...");
-            BaritoneBridge.goTo(targetBed.getX(), targetBed.getY(), targetBed.getZ());
+            BaritoneBridge.goToIdle(targetBed.getX(), targetBed.getY(), targetBed.getZ());
         } else {
             AIDashboardFrame.appendSystemLog("[SLEEP] No bed found nearby!");
         }

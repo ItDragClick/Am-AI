@@ -80,13 +80,13 @@ public final class AIMemoryStore {
 
 	// -------------------------------------------------------------- I/O
 
-	private static Path file() {
-		return FabricLoader.getInstance().getConfigDir().resolve("am_ai_memory.json");
+	private static Path getConfigFile() {
+		return FabricLoader.getInstance().getConfigDir().resolve("am-ai").resolve("am_ai_memory.json");
 	}
 
 	public static void load() {
 		synchronized (LOCK) {
-			Path path = file();
+			Path path = getConfigFile();
 			if (!Files.exists(path)) {
 				save();
 				return;
@@ -110,6 +110,21 @@ public final class AIMemoryStore {
 						}
 					}
 					data = loaded;
+					// One-time migration: earlier builds kept a second score map
+					// here; merge it into PlayerRelationshipDB and empty it so
+					// the two stores can never diverge again.
+					if (!loaded.playerAffinities.isEmpty()) {
+						java.util.Map<String, Integer> existing = PlayerRelationshipDB.snapshot();
+						for (java.util.Map.Entry<String, Integer> e : loaded.playerAffinities.entrySet()) {
+							if (!existing.containsKey(e.getKey())) {
+								PlayerRelationshipDB.setScore(e.getKey(), e.getValue());
+							}
+						}
+						AmAI.LOGGER.info("[am-ai] Migrated {} affinity score(s) into PlayerRelationshipDB",
+								loaded.playerAffinities.size());
+						loaded.playerAffinities.clear();
+						save();
+					}
 					if (scrubbed > 0) {
 						AmAI.LOGGER.info("[am-ai] Scrubbed {} hallucinated action(s) from memory", scrubbed);
 						save();
@@ -125,8 +140,8 @@ public final class AIMemoryStore {
 
 	private static void save() {
 		try {
-			Files.createDirectories(file().getParent());
-			Files.writeString(file(), GSON.toJson(data), StandardCharsets.UTF_8);
+			Files.createDirectories(getConfigFile().getParent());
+			Files.writeString(getConfigFile(), GSON.toJson(data), StandardCharsets.UTF_8);
 		} catch (IOException e) {
 			AmAI.LOGGER.error("[am-ai] Failed to save memory file", e);
 		}
@@ -175,20 +190,15 @@ public final class AIMemoryStore {
 	}
 
 	// ---------------------------------------------------- feelings/affinities
+	// PlayerRelationshipDB is the single feelings store; these delegates exist
+	// so older call sites keep working without a second score map diverging.
 
 	public static void modifyAffinity(String player, int amount) {
-		synchronized (LOCK) {
-			int current = data.playerAffinities.getOrDefault(player, 0);
-			int newAffinity = Math.max(-100, Math.min(100, current + amount));
-			data.playerAffinities.put(player, newAffinity);
-			save();
-		}
+		PlayerRelationshipDB.modifyScore(player, amount);
 	}
 
 	public static int getAffinity(String player) {
-		synchronized (LOCK) {
-			return data.playerAffinities.getOrDefault(player, 0);
-		}
+		return PlayerRelationshipDB.getScore(player);
 	}
 
 	// ---------------------------------------------------- dashboard resets
@@ -207,8 +217,9 @@ public final class AIMemoryStore {
 		synchronized (LOCK) {
 			data.playerAffinities.clear();
 			save();
-			AmAI.LOGGER.info("[am-ai] All feelings and affinities reset to neutral.");
 		}
+		PlayerRelationshipDB.clearAll();
+		AmAI.LOGGER.info("[am-ai] All feelings and affinities reset to neutral.");
 	}
 
 	// ---------------------------------------------------- prompt injection
@@ -238,9 +249,10 @@ public final class AIMemoryStore {
 							.append("\" -> you executed \"").append(i.action).append("\"\n");
 				}
 			}
-			if (!data.playerAffinities.isEmpty()) {
+			java.util.Map<String, Integer> feelings = PlayerRelationshipDB.snapshot();
+			if (!feelings.isEmpty()) {
 				sb.append("Your feelings towards players (Affinity scale: -100 to 100):\n");
-				for (java.util.Map.Entry<String, Integer> e : data.playerAffinities.entrySet()) {
+				for (java.util.Map.Entry<String, Integer> e : feelings.entrySet()) {
 					String mood = "Neutral";
 					if (e.getValue() > 50) mood = "You love them";
 					else if (e.getValue() > 20) mood = "You like them";

@@ -56,7 +56,6 @@ public final class SurvivalMonitor {
 	// ----------------------------------------------------- eat constants
 	private static final int HUNGER_AUTO_EAT = 14;
 	private static final int HUNGER_CRITICAL = 6;
-	private static final int HUNGER_COMBAT_SAFE = 12;
 	private static final double COMBAT_RETREAT_BLOCKS = 5.0;
 
 	/** Extended attacker scan for ranged hits (skeleton arrows from afar). */
@@ -84,6 +83,10 @@ public final class SurvivalMonitor {
 
 	private static boolean eating = false;
 	private static int slotBeforeEating = -1;
+
+	public static boolean isEating() {
+		return eating;
+	}
 
 	private static String attackTargetName = null;
 	private static LivingEntity attackTarget = null;
@@ -231,15 +234,19 @@ public final class SurvivalMonitor {
 		tickProtect(mc, player);
 		tickManualAttack(mc, player);
 		tickCombatDefense(mc, player);
+		tickMlgWater(mc, player);
 
 		lastHealth = player.getHealth();
 	}
 
 	// --------------------------------------------------------- death watch
 
+	private static int deathTicks = 0;
+
 	/** Returns true while dead (all other behaviour suspended). */
 	private static boolean handleDeath(Minecraft mc, LocalPlayer player) {
 		if (!player.isDeadOrDying()) {
+			deathTicks = 0;
 			return false;
 		}
 		if (!deathReported) {
@@ -260,6 +267,13 @@ public final class SurvivalMonitor {
 			OllamaNetworkClient.submitPrompt(OllamaNetworkClient.Source.SYSTEM, "System",
 					"You died in the game. Inform the user and reply with the click_respawn action.");
 		}
+		
+		deathTicks++;
+		if (deathTicks > 60 && Math.random() < 0.01) {
+			AIDashboardFrame.appendSystemLog("[SYSTEM] Auto-respawn triggered (failsafe).");
+			clickRespawn();
+		}
+		
 		return true;
 	}
 
@@ -451,6 +465,12 @@ public final class SurvivalMonitor {
 		if (protectTarget == null || attackTargetName != null) {
 			return;
 		}
+		// Keep the follow block-edit policy pinned: Baritone settings are
+		// global and other tasks (mine, goto) flip them mid-escort. Combat
+		// chases own the settings while combatMode is active.
+		if (!combatMode) {
+			BaritoneBridge.enforceFollowBlockPolicy();
+		}
 		Player escorted = null;
 		for (Entity entity : mc.level.entitiesForRendering()) {
 			if (entity instanceof Player p && p.getName().getString().equalsIgnoreCase(protectTarget) && p.isAlive()) {
@@ -548,6 +568,10 @@ public final class SurvivalMonitor {
 	/** Order finished: release keys and, in escort stance, resume trailing. */
 	private static void completeAttackOrder(Minecraft mc) {
 		clearAttackOrder();
+		if (rangedActive) {
+			rangedActive = false;
+			mc.options.keyUse.setDown(false);
+		}
 		releaseMovementKeys(mc);
 		if (protectTarget != null) {
 			BaritoneBridge.follow(protectTarget);
@@ -582,6 +606,14 @@ public final class SurvivalMonitor {
 				combatMode = true;
 				currentThreat = attacker;
 				combatEatHold = false;
+				// Feelings: a player attacking the bot costs relationship score
+				// (once per combat engagement, not per hit-tick).
+				if (tookDamage && attacker instanceof Player hostile) {
+					String name = hostile.getName().getString();
+					com.itdragclick.client.memory.PlayerRelationshipDB.modifyScore(name, -10);
+					AIDashboardFrame.appendSystemLog("[RELATIONSHIP] " + name + " attacked me! Score -10 (now "
+							+ com.itdragclick.client.memory.PlayerRelationshipDB.getScore(name) + ").");
+				}
 				// Cache the active objective (Baritone goal) before fighting.
 				BaritoneBridge.pauseForCombat();
 				AIDashboardFrame.appendSystemLog("[SYSTEM] Under attack! Pausing Baritone and defending myself.");
@@ -589,17 +621,30 @@ public final class SurvivalMonitor {
 			return;
 		}
 
-		// --- Critical hunger mid-fight: back off, eat, re-engage above 12.
-		int hunger = player.getFoodData().getFoodLevel();
-		if (!combatEatHold && hunger < HUNGER_CRITICAL && currentThreat != null) {
-			combatEatHold = true;
-			releaseMovementKeys(mc);
-			retreatFrom(player, currentThreat);
-			beginEating(mc, player);
-			AIDashboardFrame.appendSystemLog("[SYSTEM] Critical hunger mid-combat — retreating 5 blocks to eat.");
+		// --- Critical health mid-fight: back off, eat, re-engage once healed
+		// above the configured threshold (+4 buffer). Both the toggle and the
+		// threshold come from settings, read fresh every tick.
+		com.itdragclick.client.config.AIModSettings cfg = com.itdragclick.client.config.SettingsPersistenceManager.get();
+		float fleeThreshold = cfg.lowHealthThreshold;
+		boolean needsHeal = cfg.fleeOnLowHealth && player.getHealth() <= fleeThreshold;
+		if (!combatEatHold && needsHeal && currentThreat != null) {
+			boolean hasFood = false;
+			for (int slot = 0; slot < 36; slot++) {
+				if (player.getInventory().getItem(slot).has(DataComponents.FOOD)) {
+					hasFood = true; break;
+				}
+			}
+			if (hasFood) {
+				combatEatHold = true;
+				releaseMovementKeys(mc);
+				retreatFrom(player, currentThreat);
+				beginEating(mc, player);
+				AIDashboardFrame.appendSystemLog("[SYSTEM] Low health mid-combat — retreating to eat.");
+			}
 		}
 		if (combatEatHold) {
-			if (hunger > HUNGER_COMBAT_SAFE || (!eating && hunger >= HUNGER_CRITICAL)) {
+			float safeHealth = Math.min(20.0f, fleeThreshold + 4.0f);
+			if (player.getHealth() >= safeHealth || (!eating && player.getHealth() > fleeThreshold)) {
 				combatEatHold = false;
 				AIDashboardFrame.appendSystemLog("[SYSTEM] Recovered — returning to the fight.");
 			} else {
@@ -632,6 +677,10 @@ public final class SurvivalMonitor {
 		combatMode = false;
 		currentThreat = null;
 		combatEatHold = false;
+		if (rangedActive) {
+			rangedActive = false;
+			mc.options.keyUse.setDown(false);
+		}
 		releaseMovementKeys(mc);
 		if (resume) {
 			BaritoneBridge.resumeRememberedGoal();
@@ -647,8 +696,11 @@ public final class SurvivalMonitor {
 	 * qualify — fall damage next to a pig must not start a pig massacre.
 	 */
 	private static LivingEntity findAttacker(Minecraft mc, LocalPlayer player, double radius) {
+		// The synced attacker is authoritative — accept it at long range and
+		// regardless of type, so ANY entity that hits the bot gets fought back
+		// (wolves, iron golems, bees... not just Monster subclasses).
 		LivingEntity synced = player.getLastHurtByMob();
-		if (synced != null && synced.isAlive() && !isFriendly(synced) && player.distanceTo(synced) <= radius) {
+		if (synced != null && synced.isAlive() && !isFriendly(synced) && player.distanceTo(synced) <= 64.0) {
 			return synced;
 		}
 		// Projectile trace: an arrow near us right after taking damage means
@@ -658,23 +710,32 @@ public final class SurvivalMonitor {
 		if (shooter != null) {
 			return shooter;
 		}
-		LivingEntity monster = findNearestMonster(mc, player, radius);
-		if (monster != null) {
-			return monster;
-		}
-		LivingEntity nearestPlayer = null;
+		// Nearest entity that CAN be hostile: monsters, neutral mobs (wolves,
+		// golems, bees — they only qualify here right after we bled, so a
+		// passive pig next to fall damage still never starts a massacre),
+		// and other players.
+		LivingEntity nearest = null;
 		double nearestDistance = radius;
 		for (Entity entity : mc.level.entitiesForRendering()) {
-			if (!(entity instanceof Player other) || other == player || !other.isAlive() || isFriendly(other)) {
+			if (!(entity instanceof LivingEntity living) || living == player || !living.isAlive() || isFriendly(living)) {
 				continue;
 			}
-			double distance = player.distanceTo(other);
+			boolean canBeHostile = living instanceof Monster
+					|| living instanceof net.minecraft.world.entity.NeutralMob
+					|| living instanceof Player;
+			if (!canBeHostile) {
+				continue;
+			}
+			double distance = player.distanceTo(living);
 			if (distance <= nearestDistance) {
-				nearestPlayer = other;
-				nearestDistance = distance;
+				// Monsters win ties/priority over neutral mobs and players.
+				if (nearest == null || distance < nearestDistance || living instanceof Monster) {
+					nearest = living;
+					nearestDistance = distance;
+				}
 			}
 		}
-		return nearestPlayer;
+		return nearest;
 	}
 
 	/**
@@ -759,12 +820,28 @@ public final class SurvivalMonitor {
 			return;
 		}
 		player.lookAt(EntityAnchorArgument.Anchor.EYES, target.getEyePosition());
-		// Pre-action inventory prep: best weapon staged in hotbar slot 0.
-		if (!eating) {
+
+		com.itdragclick.client.config.AIModSettings cfg = com.itdragclick.client.config.SettingsPersistenceManager.get();
+		double distance = player.distanceTo(target);
+
+		// Out of melee reach with a bow/crossbow available: stand and shoot
+		// instead of chasing. Falls through to melee when ineligible.
+		if (tickRangedAttack(mc, player, target, distance, cfg)) {
+			return;
+		}
+
+		if (cfg.useShieldWhileFighting) {
+			InventoryHelper.equipOffhand(mc, player, "shield");
+		}
+
+		boolean botBlocking = mc.options.keyUse.isDown() && player.getOffhandItem().getItem() == net.minecraft.world.item.Items.SHIELD;
+		boolean targetBlocking = (target instanceof Player p && p.isBlocking());
+		if (targetBlocking && distance <= STRIKE_RADIUS) {
+			InventoryHelper.equipBestAxe(mc, player);
+		} else if (!eating) {
 			InventoryHelper.equipBestWeapon(mc, player);
 		}
 
-		double distance = player.distanceTo(target);
 		if (chaseRepathCooldown > 0) {
 			chaseRepathCooldown--;
 		}
@@ -775,7 +852,6 @@ public final class SurvivalMonitor {
 				releaseMovementKeys(mc);
 				if (chaseRepathCooldown == 0) {
 					BlockPos pos = target.blockPosition();
-					com.itdragclick.client.config.AIModSettings cfg = com.itdragclick.client.config.SettingsPersistenceManager.get();
 					BaritoneBridge.goToCombat(pos.getX(), pos.getY(), pos.getZ(), cfg.combatAllowBlocks);
 					chaseRepathCooldown = CHASE_REPATH_INTERVAL_TICKS;
 				}
@@ -795,14 +871,99 @@ public final class SurvivalMonitor {
 			releaseMovementKeys(mc);
 		}
 
-		if (distance <= STRIKE_RADIUS && player.getAttackStrengthScale(0.0f) >= 1.0f) {
-			try {
-				mc.gameMode.attack(player, target);
-				player.swing(InteractionHand.MAIN_HAND);
-			} catch (Exception e) {
-				AmAI.LOGGER.error("[am-ai] Attack dispatch failed", e);
+		if (distance <= STRIKE_RADIUS) {
+			boolean shouldAttack = false;
+			if (targetBlocking && !botBlocking) {
+				shouldAttack = true; // Break shield instantly
+			} else if (player.getAttackStrengthScale(0.0f) >= 1.0f) {
+				shouldAttack = true;
+			}
+			if (shouldAttack) {
+				try {
+					mc.gameMode.attack(player, target);
+					player.swing(InteractionHand.MAIN_HAND);
+				} catch (Exception e) {
+					AmAI.LOGGER.error("[am-ai] Attack dispatch failed", e);
+				}
 			}
 		}
+
+		boolean targetHasRanged = target.getMainHandItem().getItem() == net.minecraft.world.item.Items.BOW || 
+								  target.getMainHandItem().getItem() == net.minecraft.world.item.Items.CROSSBOW ||
+								  target.getOffhandItem().getItem() == net.minecraft.world.item.Items.CROSSBOW;
+		
+		double blockDistance = targetHasRanged ? 20.0 : (STRIKE_RADIUS + 2.0);
+
+		if (distance <= blockDistance) {
+			boolean threatLooking = target.getViewVector(1.0f).dot(player.position().subtract(target.position()).normalize()) > 0.5;
+			if (threatLooking && cfg.useShieldWhileFighting && player.getOffhandItem().getItem() == net.minecraft.world.item.Items.SHIELD) {
+				mc.options.keyUse.setDown(true);
+			} else {
+				if (player.getOffhandItem().getItem() == net.minecraft.world.item.Items.SHIELD) {
+					mc.options.keyUse.setDown(false);
+				}
+			}
+		} else {
+			if (mc.options.keyUse.isDown() && player.getOffhandItem().getItem() == net.minecraft.world.item.Items.SHIELD) {
+				mc.options.keyUse.setDown(false);
+			}
+		}
+	}
+
+	/** True while the bow/crossbow loop owns the use key. */
+	private static boolean rangedActive = false;
+
+	/**
+	 * Ranged combat loop: when the target is beyond comfortable chase range
+	 * but still tracked, and the inventory holds a bow/crossbow plus arrows,
+	 * stand still and shoot. Bow: hold use to full draw (20 ticks), release
+	 * fires. Crossbow: hold to charge (25 ticks), release loads, one more use
+	 * press fires. Returns false (after cleaning up) when ineligible so the
+	 * caller falls back to melee.
+	 */
+	private static boolean tickRangedAttack(Minecraft mc, LocalPlayer player, LivingEntity target, double distance,
+			com.itdragclick.client.config.AIModSettings cfg) {
+		boolean eligible = cfg.useBowCrossbow && !eating && !gappleActive
+				&& distance > CHASE_PATHFIND_RANGE && distance <= COMBAT_TRACKING_RADIUS
+				&& InventoryHelper.countItem(player, "arrow") > 0
+				&& player.hasLineOfSight(target)
+				&& InventoryHelper.equipRangedWeapon(mc, player);
+		if (!eligible) {
+			if (rangedActive) {
+				// Target closed the distance (or ammo ran out): release the
+				// draw and swap back to the melee weapon.
+				rangedActive = false;
+				mc.options.keyUse.setDown(false);
+				InventoryHelper.equipBestWeapon(mc, player);
+			}
+			return false;
+		}
+		if (!rangedActive) {
+			rangedActive = true;
+			BaritoneBridge.stopQuietly();
+			AIDashboardFrame.appendSystemLog("[COMBAT] Target out of melee reach — switching to ranged weapon.");
+		}
+		releaseMovementKeys(mc);
+		ItemStack held = player.getMainHandItem();
+		if (InventoryHelper.itemIdOf(held).equals("crossbow")) {
+			var loaded = held.get(DataComponents.CHARGED_PROJECTILES);
+			boolean charged = loaded != null && !loaded.isEmpty();
+			if (charged) {
+				mc.options.keyUse.setDown(false);
+				mc.gameMode.useItem(player, InteractionHand.MAIN_HAND); // fire
+			} else if (player.isUsingItem() && player.getTicksUsingItem() >= 25) {
+				mc.options.keyUse.setDown(false); // release loads the bolt
+			} else {
+				mc.options.keyUse.setDown(true);
+			}
+		} else {
+			if (player.isUsingItem() && player.getTicksUsingItem() >= 20) {
+				mc.options.keyUse.setDown(false); // full draw — loose the arrow
+			} else {
+				mc.options.keyUse.setDown(true);
+			}
+		}
+		return true;
 	}
 
 	/** Baritone-path 5 blocks directly away from the threat. */
@@ -810,7 +971,82 @@ public final class SurvivalMonitor {
 		Vec3 away = player.position().subtract(threat.position());
 		Vec3 direction = away.lengthSqr() < 1.0E-4 ? new Vec3(1, 0, 0) : away.normalize();
 		Vec3 retreat = player.position().add(direction.scale(COMBAT_RETREAT_BLOCKS));
-		BaritoneBridge.goTo((int) Math.floor(retreat.x), player.blockPosition().getY(), (int) Math.floor(retreat.z));
+		BaritoneBridge.goToCombat((int) Math.floor(retreat.x), player.blockPosition().getY(), (int) Math.floor(retreat.z), false);
+	}
+
+	/** True while an MLG drop is in progress (falling or waiting to scoop). */
+	private static boolean mlgActive = false;
+	/** Post-landing countdown before scooping the water back (-1 = not landed yet). */
+	private static int mlgPickupDelay = -1;
+
+	/**
+	 * MLG water bucket, MAIN hand only — offhand SWAP staging glitched items.
+	 * Falling more than 2 blocks: select a water bucket in the hotbar (swap it
+	 * in from the backpack if needed), look straight down, hold use. After
+	 * landing, wait 10 ticks (~500ms) so the water spreads/settles, then scoop
+	 * it back up with the now-empty bucket.
+	 */
+	private static void tickMlgWater(Minecraft mc, LocalPlayer player) {
+		if (!com.itdragclick.client.config.SettingsPersistenceManager.get().allowMlgWater) {
+			return;
+		}
+
+		if (player.fallDistance > 2.0f && player.getDeltaMovement().y < -0.5) {
+			if (InventoryHelper.selectInHotbar(mc, player, "water_bucket")) {
+				mlgActive = true;
+				mlgPickupDelay = -1;
+				player.setXRot(90.0f); // Look straight down
+				mc.options.keyUse.setDown(true);
+			}
+			return;
+		}
+
+		if (!mlgActive || player.fallDistance != 0.0f) {
+			return; // still airborne (or nothing to clean up)
+		}
+
+		// Landed: release use immediately, then delay the pickup.
+		if (mlgPickupDelay < 0) {
+			mc.options.keyUse.setDown(false);
+			mlgPickupDelay = 10; // 10 ticks = 500ms
+			return;
+		}
+		if (mlgPickupDelay > 0) {
+			mlgPickupDelay--;
+			return;
+		}
+
+		// Scoop the water back: aim at the actual placed water source (it is
+		// not always straight below after sliding off the splash), then use.
+		if (InventoryHelper.selectInHotbar(mc, player, "bucket")) {
+			BlockPos water = findNearbyWaterSource(mc, player);
+			if (water != null) {
+				player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(water));
+			} else {
+				player.setXRot(90.0f); // fallback: straight down
+			}
+			mc.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+		}
+		mlgActive = false;
+		mlgPickupDelay = -1;
+	}
+
+	/** Nearest water SOURCE block within 2 blocks of the feet (scoopable), or null. */
+	private static BlockPos findNearbyWaterSource(Minecraft mc, LocalPlayer player) {
+		BlockPos feet = player.blockPosition();
+		BlockPos best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (BlockPos p : BlockPos.betweenClosed(feet.offset(-2, -1, -2), feet.offset(2, 1, 2))) {
+			var fluid = mc.level.getFluidState(p);
+			if (fluid.is(net.minecraft.tags.FluidTags.WATER) && fluid.isSource()) {
+				double d = p.distSqr(feet);
+				if (d < bestDist) {
+					bestDist = d;
+					best = p.immutable();
+				}
+			}
+		}
+		return best;
 	}
 
 	private static void releaseMovementKeys(Minecraft mc) {
@@ -841,6 +1077,9 @@ public final class SurvivalMonitor {
 		currentThreat = null;
 		combatEatHold = false;
 		gappleActive = false;
+		rangedActive = false;
+		mlgActive = false;
+		mlgPickupDelay = -1;
 		protectTarget = null;
 		clearAttackOrder();
 		lastHealth = -1.0f;

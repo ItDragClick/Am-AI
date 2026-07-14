@@ -30,7 +30,7 @@ public final class SettingsPersistenceManager {
 	}
 
 	private static Path configFile() {
-		return FabricLoader.getInstance().getConfigDir().resolve("ai_companion_settings.json");
+		return FabricLoader.getInstance().getConfigDir().resolve("am-ai").resolve("ai_companion_settings.json");
 	}
 
 	/** Thread-safe snapshot of the current configuration. */

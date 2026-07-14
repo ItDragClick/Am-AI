@@ -73,8 +73,12 @@ public final class ChatEventListener {
 			// Strip punctuation if any
 			killer = killer.replaceAll("[^a-zA-Z0-9_]", "");
 			if (!killer.isEmpty()) {
-				AIMemoryStore.modifyAffinity(killer, -30);
-				AIDashboardFrame.appendSystemLog("[AFFINITY] " + killer + " killed the bot! Affinity -30.");
+				com.itdragclick.client.memory.PlayerRelationshipDB.modifyScore(killer, -30);
+				// Long-term memory: killers are remembered across sessions and
+				// injected into every future prompt via promptContext().
+				AIMemoryStore.addFact("Player '" + killer + "' has killed me before. I have not forgotten it.");
+				AIDashboardFrame.appendSystemLog("[RELATIONSHIP] " + killer + " killed the bot! Score -30 (now "
+						+ com.itdragclick.client.memory.PlayerRelationshipDB.getScore(killer) + "), stored in long-term memory.");
 			}
 			return;
 		}
@@ -83,8 +87,21 @@ public final class ChatEventListener {
 		if (!rawMsg.startsWith(myName)) {
 			String victim = rawMsg.split(" ")[0];
 			victim = victim.replaceAll("[^a-zA-Z0-9_]", "");
+			// Revenge satisfied: the bot killed a hated player (< -60) —
+			// anger cools off, score rises to -40 (dislike tier, no more
+			// random idle attacks until re-provoked).
+			int byIdx = rawMsg.indexOf(" by ");
+			if (!victim.isEmpty() && byIdx >= 0) {
+				String killer = rawMsg.substring(byIdx + 4).split(" ")[0].replaceAll("[^a-zA-Z0-9_]", "");
+				if (killer.equals(myName)
+						&& com.itdragclick.client.memory.PlayerRelationshipDB.getScore(victim) < -60) {
+					com.itdragclick.client.memory.PlayerRelationshipDB.setScore(victim, -40);
+					AIDashboardFrame.appendSystemLog("[RELATIONSHIP] Got my revenge on " + victim
+							+ " — anger cooled, score set to -40.");
+				}
+			}
 			if (!victim.isEmpty()) {
-				int affinity = AIMemoryStore.getAffinity(victim);
+				int affinity = com.itdragclick.client.memory.PlayerRelationshipDB.getScore(victim);
 				String tone = affinity < 0 ? "mock and insult them brutally" : "act surprised or laugh";
 				String prompt = "[SYSTEM: " + rawMsg + "! React to this in chat (" + tone + ")]";
 				AIDashboardFrame.appendSystemLog("[REACTIVE] Death detected: " + rawMsg);
@@ -133,6 +150,15 @@ public final class ChatEventListener {
 		// never get trapped in a conversational round-trip. Wipes the whole
 		// LIFO task stack too.
 		String lowered = prompt.toLowerCase(Locale.ROOT);
+		
+		if (lowered.contains("sorry")) {
+			int currentScore = com.itdragclick.client.memory.PlayerRelationshipDB.getScore(who);
+			if (currentScore < -60) {
+				com.itdragclick.client.memory.PlayerRelationshipDB.setScore(who, -60);
+				AIDashboardFrame.appendSystemLog("[RELATIONSHIP] " + who + " apologized. Forgiven up to -60.");
+			}
+		}
+
 		if ((lowered.equals("stop") || lowered.startsWith("stop ")) && SurvivalMonitor.isFriendly(who)) {
 			AIDashboardFrame.appendSystemLog("[OVERRIDE] Immediate stop from " + who + " — LLM bypassed.");
 			mc.execute(() -> {

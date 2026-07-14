@@ -26,6 +26,8 @@ public final class InventoryHelper {
 
 	public static final int WEAPON_HOTBAR_SLOT = 0;
 	public static final int FOOD_HOTBAR_SLOT = 1;
+	/** Staging slot for utility items (MLG bucket) — keeps weapon/food slots intact. */
+	public static final int UTILITY_HOTBAR_SLOT = 2;
 
 	private InventoryHelper() {
 	}
@@ -104,6 +106,7 @@ public final class InventoryHelper {
 	 * inventory holds no weapon at all (fists it is).
 	 */
 	public static boolean equipBestWeapon(Minecraft mc, LocalPlayer player) {
+		if (SurvivalMonitor.isEating()) return false;
 		int bestSlot = -1;
 		double bestScore = 0.0;
 		for (int slot = 0; slot < 36; slot++) {
@@ -122,6 +125,84 @@ public final class InventoryHelper {
 		if (player.getInventory().getSelectedSlot() != WEAPON_HOTBAR_SLOT) {
 			player.getInventory().setSelectedSlot(WEAPON_HOTBAR_SLOT);
 		}
+		return true;
+	}
+
+	/**
+	 * Selects the named item in the MAIN hand via the hotbar: if it's already
+	 * on the hotbar just select that slot; otherwise swap it in from the
+	 * backpack to the utility slot and select it. Never touches the offhand
+	 * (offhand SWAP clicks under latency glitch/desync items). Returns false
+	 * when the item is nowhere in the inventory.
+	 */
+	public static boolean selectInHotbar(Minecraft mc, LocalPlayer player, String itemId) {
+		for (int slot = 0; slot < 9; slot++) {
+			if (itemIdOf(player.getInventory().getItem(slot)).equals(itemId)) {
+				if (player.getInventory().getSelectedSlot() != slot) {
+					player.getInventory().setSelectedSlot(slot);
+				}
+				return true;
+			}
+		}
+		for (int slot = 9; slot < 36; slot++) {
+			if (itemIdOf(player.getInventory().getItem(slot)).equals(itemId)) {
+				swapIntoHotbar(mc, player, slot, UTILITY_HOTBAR_SLOT);
+				player.getInventory().setSelectedSlot(UTILITY_HOTBAR_SLOT);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Stages a bow (preferred) or crossbow in hotbar slot 0 and selects it.
+	 * Returns false when the inventory holds neither. Ammo checks are the
+	 * caller's job ({@code countItem(player, "arrow")}).
+	 */
+	public static boolean equipRangedWeapon(Minecraft mc, LocalPlayer player) {
+		if (SurvivalMonitor.isEating()) return false;
+		String heldId = itemIdOf(player.getInventory().getSelectedItem());
+		if (heldId.equals("bow") || heldId.equals("crossbow")) {
+			return true;
+		}
+		int bowSlot = -1;
+		int crossbowSlot = -1;
+		for (int slot = 0; slot < 36; slot++) {
+			String id = itemIdOf(player.getInventory().getItem(slot));
+			if (id.equals("bow") && bowSlot < 0) {
+				bowSlot = slot;
+			} else if (id.equals("crossbow") && crossbowSlot < 0) {
+				crossbowSlot = slot;
+			}
+		}
+		int chosen = bowSlot >= 0 ? bowSlot : crossbowSlot;
+		if (chosen < 0) {
+			return false;
+		}
+		if (chosen != WEAPON_HOTBAR_SLOT) {
+			swapIntoHotbar(mc, player, chosen, WEAPON_HOTBAR_SLOT);
+		}
+		player.getInventory().setSelectedSlot(WEAPON_HOTBAR_SLOT);
+		return true;
+	}
+
+	public static boolean equipBestAxe(Minecraft mc, LocalPlayer player) {
+		if (SurvivalMonitor.isEating()) return false;
+		int bestSlot = -1;
+		double bestScore = 0.0;
+		for (int slot = 0; slot < 36; slot++) {
+			ItemStack stack = player.getInventory().getItem(slot);
+			if (itemIdOf(stack).endsWith("_axe")) {
+				double score = weaponScore(stack);
+				if (score > bestScore) {
+					bestScore = score;
+					bestSlot = slot;
+				}
+			}
+		}
+		if (bestSlot < 0) return false;
+		if (bestSlot != WEAPON_HOTBAR_SLOT) swapIntoHotbar(mc, player, bestSlot, WEAPON_HOTBAR_SLOT);
+		if (player.getInventory().getSelectedSlot() != WEAPON_HOTBAR_SLOT) player.getInventory().setSelectedSlot(WEAPON_HOTBAR_SLOT);
 		return true;
 	}
 
@@ -225,6 +306,31 @@ public final class InventoryHelper {
 		if (equipped > 0) {
 			AIDashboardFrame.appendSystemLog("[INVENTORY] Equipped " + equipped + " armor pieces.");
 		}
+	}
+
+	public static void equipOffhand(Minecraft mc, LocalPlayer player, String itemId) {
+		String cleanId = itemId.toLowerCase().replace("minecraft:", "").trim();
+		if (itemIdOf(player.getOffhandItem()).equals(cleanId)) return;
+		for (int slot = 0; slot < 36; slot++) {
+			ItemStack stack = player.getInventory().getItem(slot);
+			if (!stack.isEmpty() && itemIdOf(stack).equals(cleanId)) {
+				int menuSlot = slot < 9 ? 36 + slot : slot;
+				mc.gameMode.handleContainerInput(player.inventoryMenu.containerId, menuSlot, 40, ContainerInput.SWAP, player);
+				AIDashboardFrame.appendSystemLog("[INVENTORY] Equipped " + cleanId + " in offhand.");
+				return;
+			}
+		}
+	}
+
+	public static void unequipArmor(Minecraft mc, LocalPlayer player) {
+		// Armor slots in InventoryMenu: 5 (head), 6 (chest), 7 (legs), 8 (feet). Offhand: 45.
+		for (int slot : new int[]{5, 6, 7, 8, 45}) {
+			ItemStack stack = player.inventoryMenu.getSlot(slot).getItem();
+			if (!stack.isEmpty()) {
+				mc.gameMode.handleContainerInput(player.inventoryMenu.containerId, slot, 0, ContainerInput.QUICK_MOVE, player);
+			}
+		}
+		AIDashboardFrame.appendSystemLog("[INVENTORY] Unequipped armor and offhand.");
 	}
 
 	public static String getInventorySummary(LocalPlayer player) {

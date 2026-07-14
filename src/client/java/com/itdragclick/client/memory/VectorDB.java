@@ -15,11 +15,12 @@ import java.util.List;
 
 public final class VectorDB {
 
-    private static final Path DB_FILE = FabricLoader.getInstance().getConfigDir().resolve("am_ai_vectors.json");
+    private static final Path DB_FILE = FabricLoader.getInstance().getConfigDir().resolve("am-ai").resolve("am_ai_vectors.json");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final List<MemoryRecord> memories = new ArrayList<>();
 
-    public record MemoryRecord(String text, float[] vector) {}
+    public record MemoryMetadata(String player, String sentiment, long timestamp) {}
+    public record MemoryRecord(String text, float[] vector, MemoryMetadata metadata) {}
 
     private VectorDB() {}
 
@@ -44,8 +45,8 @@ public final class VectorDB {
         }
     }
 
-    public static synchronized void addMemory(String text, float[] vector) {
-        memories.add(new MemoryRecord(text, vector));
+    public static synchronized void addMemory(String text, float[] vector, String player, String sentiment) {
+        memories.add(new MemoryRecord(text, vector, new MemoryMetadata(player, sentiment, System.currentTimeMillis())));
         // Keep it bounded if it gets too large (e.g. 1000 memories max)
         if (memories.size() > 1000) {
             memories.remove(0);

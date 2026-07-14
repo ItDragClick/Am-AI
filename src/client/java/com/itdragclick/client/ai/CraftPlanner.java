@@ -160,7 +160,13 @@ public final class CraftPlanner {
     }
 
     private static String resolveDeepestNeed(LocalPlayer player, String itemNeeded, int requiredCount) {
-        if (count(player, itemNeeded) >= requiredCount) return "done";
+        int paddedRequired = requiredCount;
+        // Baritone uses these blocks to build out of holes during pathfinding.
+        // Pad the requirement so we don't fall below the needed amount and get stuck in a mining loop.
+        if (itemNeeded.equals("cobblestone") || itemNeeded.equals("dirt") || itemNeeded.equals("netherrack") || itemNeeded.equals("stone")) {
+            paddedRequired += 8;
+        }
+        if (count(player, itemNeeded) >= paddedRequired) return "done";
         
         if (SMELT.containsKey(itemNeeded)) {
             SmeltRecipe smelt = SMELT.get(itemNeeded);
@@ -318,7 +324,11 @@ public final class CraftPlanner {
         player.getInventory().setSelectedSlot(hotbar);
         for (Direction dir : Direction.Plane.HORIZONTAL) {
             BlockPos spot = player.blockPosition().relative(dir);
-            if (mc.level.getBlockState(spot).isAir() && !mc.level.getBlockState(spot.below()).isAir()) {
+            // Skip spots occupied by an entity (mob, player, boat...) — the
+            // server rejects the placement and the step would silently stall.
+            boolean entityInWay = !mc.level.getEntities((net.minecraft.world.entity.Entity) null,
+                    new net.minecraft.world.phys.AABB(spot), e -> e.blocksBuilding).isEmpty();
+            if (!entityInWay && mc.level.getBlockState(spot).isAir() && !mc.level.getBlockState(spot.below()).isAir()) {
                 BlockPos ground = spot.below();
                 player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(ground));
                 player.setShiftKeyDown(true);

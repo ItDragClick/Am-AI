@@ -37,27 +37,54 @@ public final class BaritoneBridge {
 		return BARITONE_PRESENT;
 	}
 
-	/** Pathfinds to absolute block coordinates via CustomGoalProcess + GoalBlock. */
+	/**
+	 * Pathfinds to absolute block coordinates via CustomGoalProcess + GoalBlock.
+	 * Block edits allowed — use ONLY for explicit work tasks (player-ordered
+	 * goto journeys, harvest/craft/farm travel). Idle and social movement must
+	 * go through {@link #goToIdle} instead.
+	 */
 	public static void goTo(int x, int y, int z) {
-		goToCombat(x, y, z, true);
+		pathTo(x, y, z, true, true, "task");
+	}
+
+	/**
+	 * The shared "can I break/place right now?" gate for all idle/social
+	 * movement (idle drifting, shiny-object walks, mini-games, bed pathing).
+	 * Break/place permissions come straight from the idle settings, default
+	 * false — an idle bot must never carve through someone's house.
+	 */
+	public static void goToIdle(int x, int y, int z) {
+		com.itdragclick.client.config.AIModSettings cfg = com.itdragclick.client.config.SettingsPersistenceManager.get();
+		pathTo(x, y, z, cfg.allowIdleBlockBreak, cfg.allowIdleBlockPlace, "idle");
 	}
 
 	public static void goToCombat(int x, int y, int z, boolean allowBlocks) {
+		pathTo(x, y, z, allowBlocks, allowBlocks, "combat");
+	}
+
+	private static void pathTo(int x, int y, int z, boolean allowBreak, boolean allowPlace, String context) {
 		if (!checkPresent("goto " + x + " " + y + " " + z)) {
 			return;
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-			BaritoneAPI.getSettings().allowPlace.value = allowBlocks;
-			BaritoneAPI.getSettings().allowBreak.value = allowBlocks;
+			BaritoneAPI.getSettings().allowBreak.value = allowBreak;
+			BaritoneAPI.getSettings().allowPlace.value = allowPlace;
 			baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(x, y, z));
-			AIDashboardFrame.appendSystemLog("[BARITONE] Pathing to (" + x + ", " + y + ", " + z + ") (blocks=" + allowBlocks + ")");
+			AIDashboardFrame.appendSystemLog("[BARITONE] Pathing to (" + x + ", " + y + ", " + z + ") (" + context
+					+ ", break=" + allowBreak + ", place=" + allowPlace + ")");
 		} catch (LinkageError e) {
 			reportObfuscatedJar("goto", e);
 		}
 	}
 
-	/** Starts a Baritone mine task for the given block id via MineProcess. */
+	/**
+	 * Starts a Baritone mine task for the given block id via MineProcess.
+	 * allowPlace stays FALSE during mining: cobblestone/dirt are Baritone
+	 * throwaway blocks, so with placing enabled it pillars/bridges with the
+	 * very blocks it just gathered — a "mine 8 stone" crafting step would
+	 * collect 8, place them climbing back, arrive with 0, and loop forever.
+	 */
 	public static void mine(String blockName) {
 		String id = normalizeBlockId(blockName);
 		if (!checkPresent("mine " + id)) {
@@ -65,26 +92,26 @@ public final class BaritoneBridge {
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-			BaritoneAPI.getSettings().allowPlace.value = true;
+			BaritoneAPI.getSettings().allowPlace.value = false;
 			BaritoneAPI.getSettings().allowBreak.value = true;
 			baritone.getMineProcess().mineByName(id);
-			AIDashboardFrame.appendSystemLog("[BARITONE] Mining '" + id + "'");
+			AIDashboardFrame.appendSystemLog("[BARITONE] Mining '" + id + "' (place disabled)");
 		} catch (LinkageError e) {
 			reportObfuscatedJar("mine", e);
 		}
 	}
 
-	/** Mine task accepting multiple block ids (any log type, both iron ores). */
+	/** Mine task accepting multiple block ids (any log type, both iron ores). Same no-place rule as {@link #mine}. */
 	public static void mineAny(String... blockIds) {
 		if (!checkPresent("mine " + String.join("/", blockIds))) {
 			return;
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-			BaritoneAPI.getSettings().allowPlace.value = true;
+			BaritoneAPI.getSettings().allowPlace.value = false;
 			BaritoneAPI.getSettings().allowBreak.value = true;
 			baritone.getMineProcess().mineByName(blockIds);
-			AIDashboardFrame.appendSystemLog("[BARITONE] Mining any of: " + String.join(", ", blockIds));
+			AIDashboardFrame.appendSystemLog("[BARITONE] Mining any of: " + String.join(", ", blockIds) + " (place disabled)");
 		} catch (LinkageError e) {
 			reportObfuscatedJar("mineAny", e);
 		}
@@ -119,13 +146,34 @@ public final class BaritoneBridge {
 		}
 		try {
 			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-			BaritoneAPI.getSettings().allowPlace.value = true;
-			BaritoneAPI.getSettings().allowBreak.value = true;
+			boolean edit = com.itdragclick.client.config.SettingsPersistenceManager.get().allowFollowBlockEdit;
+			BaritoneAPI.getSettings().allowPlace.value = edit;
+			BaritoneAPI.getSettings().allowBreak.value = edit;
 			baritone.getFollowProcess().follow(entity ->
 					entity.getName().getString().equalsIgnoreCase(targetPlayer));
 			AIDashboardFrame.appendSystemLog("[BARITONE] Following '" + targetPlayer + "'");
 		} catch (LinkageError e) {
 			reportObfuscatedJar("follow", e);
+		}
+	}
+
+	/**
+	 * Re-asserts the follow block-edit policy. Baritone settings are global:
+	 * any mine/goto call flips allowBreak/allowPlace and an already-running
+	 * follow process silently inherits them. SurvivalMonitor calls this every
+	 * tick while a follow/follow_protect escort is active (outside combat) so
+	 * `allowFollowBlockEdit` actually holds for the whole journey.
+	 */
+	public static void enforceFollowBlockPolicy() {
+		if (!BARITONE_PRESENT) {
+			return;
+		}
+		try {
+			boolean edit = com.itdragclick.client.config.SettingsPersistenceManager.get().allowFollowBlockEdit;
+			BaritoneAPI.getSettings().allowBreak.value = edit;
+			BaritoneAPI.getSettings().allowPlace.value = edit;
+		} catch (LinkageError e) {
+			reportObfuscatedJar("followPolicy", e);
 		}
 	}
 

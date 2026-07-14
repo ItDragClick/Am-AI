@@ -23,6 +23,7 @@ import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingUtilities;
+import javax.swing.JCheckBox;
 import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
@@ -302,36 +303,88 @@ public class AIDashboardFrame extends JFrame {
 		return panel;
 	}
 
+	private javax.swing.JCheckBox allowMlgWaterCheck;
+	private javax.swing.JCheckBox allowFollowBlockEditCheck;
+	private javax.swing.JCheckBox useShieldCheck;
+	private javax.swing.JCheckBox useBowCrossbowCheck;
+	private javax.swing.JCheckBox fleeOnLowHealthCheck;
+	private javax.swing.JCheckBox allowIdleBlockBreakCheck;
+	private javax.swing.JCheckBox allowIdleBlockPlaceCheck;
+	private javax.swing.JCheckBox allowIdleLookAroundCheck;
+	private javax.swing.JCheckBox allowIdleStareCheck;
+	private javax.swing.JCheckBox allowIdleGiftCheck;
+	private javax.swing.JCheckBox allowIdleExploreCheck;
+	private javax.swing.JCheckBox allowIdleBigGoalCheck;
+
 	private JPanel buildSettingsPanel() {
-		JPanel panel = new JPanel(new GridBagLayout());
-		panel.setBorder(BorderFactory.createTitledBorder("Configuration"));
+		JPanel mainPanel = new JPanel(new BorderLayout());
+		
+		JPanel corePanel = new JPanel(new GridBagLayout());
+		corePanel.setBorder(BorderFactory.createTitledBorder("Core & Combat"));
 		GridBagConstraints c = new GridBagConstraints();
 		c.insets = new Insets(4, 6, 4, 6);
 		c.fill = GridBagConstraints.HORIZONTAL;
 		c.anchor = GridBagConstraints.WEST;
 
 		c.gridy = 0; c.gridx = 0;
-		panel.add(new JLabel("Endpoint URL:"), c);
+		corePanel.add(new JLabel("Endpoint URL:"), c);
 		c.gridx = 1; c.weightx = 1.0; c.gridwidth = 3;
-		panel.add(endpointField, c);
+		corePanel.add(endpointField, c);
 		
 		c.weightx = 0; c.gridwidth = 1;
 		c.gridy = 1; c.gridx = 0;
-		panel.add(new JLabel("Target Model:"), c);
+		corePanel.add(new JLabel("Target Model:"), c);
 		c.gridx = 1;
-		panel.add(modelField, c);
+		corePanel.add(modelField, c);
 		c.gridx = 2;
-		panel.add(new JLabel("Prefix:"), c);
+		corePanel.add(new JLabel("Prefix:"), c);
 		c.gridx = 3;
-		panel.add(prefixField, c);
+		corePanel.add(prefixField, c);
 
 		c.gridy = 2; c.gridx = 0;
-		panel.add(new JLabel("Weapon Priority:"), c);
+		corePanel.add(new JLabel("Weapon Priority:"), c);
 		weaponPriorityBox = new JComboBox<>(new String[]{"Swords", "Axes", "Highest Damage"});
 		c.gridx = 1; c.gridwidth = 1;
-		panel.add(weaponPriorityBox, c);
+		corePanel.add(weaponPriorityBox, c);
+		
+		JPanel combatChecks = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+		combatChecks.add(combatBlocksCheck);
+		
+		allowMlgWaterCheck = new JCheckBox("MLG Water");
+		combatChecks.add(allowMlgWaterCheck);
+		allowFollowBlockEditCheck = new JCheckBox("Follow Block Edit");
+		combatChecks.add(allowFollowBlockEditCheck);
+		useShieldCheck = new JCheckBox("Use Shield");
+		combatChecks.add(useShieldCheck);
+		useBowCrossbowCheck = new JCheckBox("Use Bow/Crossbow");
+		combatChecks.add(useBowCrossbowCheck);
+		fleeOnLowHealthCheck = new JCheckBox("Flee on Low HP");
+		combatChecks.add(fleeOnLowHealthCheck);
+		
 		c.gridx = 2; c.gridwidth = 2;
-		panel.add(combatBlocksCheck, c);
+		corePanel.add(combatChecks, c);
+
+		JPanel idlePanel = new JPanel(new GridLayout(3, 3, 5, 5));
+		idlePanel.setBorder(BorderFactory.createTitledBorder("Idle Behaviors"));
+		
+		allowIdleLookAroundCheck = new JCheckBox("Look Around");
+		allowIdleStareCheck = new JCheckBox("Stare at Entities");
+		allowIdleGiftCheck = new JCheckBox("Give Gifts");
+		allowIdleExploreCheck = new JCheckBox("Explore/Flowers");
+		allowIdleBigGoalCheck = new JCheckBox("Big Goals");
+		allowIdleBlockBreakCheck = new JCheckBox("Idle Block Break");
+		allowIdleBlockPlaceCheck = new JCheckBox("Idle Block Place");
+		
+		idlePanel.add(allowIdleLookAroundCheck);
+		idlePanel.add(allowIdleStareCheck);
+		idlePanel.add(allowIdleGiftCheck);
+		idlePanel.add(allowIdleExploreCheck);
+		idlePanel.add(allowIdleBigGoalCheck);
+		idlePanel.add(allowIdleBlockBreakCheck);
+		idlePanel.add(allowIdleBlockPlaceCheck);
+		
+		c.gridy = 3; c.gridx = 0; c.gridwidth = 4;
+		corePanel.add(idlePanel, c);
 
 		JButton saveBtn = new JButton("Save");
 		saveBtn.addActionListener(e -> onSaveConfig());
@@ -361,13 +414,14 @@ public class AIDashboardFrame extends JFrame {
 		resetPanel.add(resetMemBtn);
 		resetPanel.add(resetAffinityBtn);
 
-		c.gridy = 3; c.gridx = 0; c.gridwidth = 4;
-		panel.add(actions, c);
+		c.gridy = 4; c.gridx = 0; c.gridwidth = 4;
+		corePanel.add(actions, c);
 		
-		c.gridy = 4;
-		panel.add(resetPanel, c);
+		c.gridy = 5;
+		corePanel.add(resetPanel, c);
 
-		return panel;
+		mainPanel.add(corePanel, BorderLayout.CENTER);
+		return mainPanel;
 	}
 
 	private void updateTaskTracker() {
@@ -398,6 +452,20 @@ public class AIDashboardFrame extends JFrame {
 		prefixField.setText(cfg.commandPrefix);
 		weaponPriorityBox.setSelectedItem(cfg.weaponPriority);
 		combatBlocksCheck.setSelected(cfg.combatAllowBlocks);
+		if (allowMlgWaterCheck != null) {
+			allowMlgWaterCheck.setSelected(cfg.allowMlgWater);
+			allowFollowBlockEditCheck.setSelected(cfg.allowFollowBlockEdit);
+			useShieldCheck.setSelected(cfg.useShieldWhileFighting);
+			useBowCrossbowCheck.setSelected(cfg.useBowCrossbow);
+			fleeOnLowHealthCheck.setSelected(cfg.fleeOnLowHealth);
+			allowIdleBlockBreakCheck.setSelected(cfg.allowIdleBlockBreak);
+			allowIdleBlockPlaceCheck.setSelected(cfg.allowIdleBlockPlace);
+			allowIdleLookAroundCheck.setSelected(cfg.allowIdleLookAround);
+			allowIdleStareCheck.setSelected(cfg.allowIdleStare);
+			allowIdleGiftCheck.setSelected(cfg.allowIdleGift);
+			allowIdleExploreCheck.setSelected(cfg.allowIdleExplore);
+			allowIdleBigGoalCheck.setSelected(cfg.allowIdleBigGoal);
+		}
 		syncActiveIndicator(cfg.active);
 	}
 
@@ -408,6 +476,20 @@ public class AIDashboardFrame extends JFrame {
 		cfg.commandPrefix = prefixField.getText().strip().isEmpty() ? "!ai" : prefixField.getText().strip();
 		cfg.weaponPriority = (String) weaponPriorityBox.getSelectedItem();
 		cfg.combatAllowBlocks = combatBlocksCheck.isSelected();
+		if (allowMlgWaterCheck != null) {
+			cfg.allowMlgWater = allowMlgWaterCheck.isSelected();
+			cfg.allowFollowBlockEdit = allowFollowBlockEditCheck.isSelected();
+			cfg.useShieldWhileFighting = useShieldCheck.isSelected();
+			cfg.useBowCrossbow = useBowCrossbowCheck.isSelected();
+			cfg.fleeOnLowHealth = fleeOnLowHealthCheck.isSelected();
+			cfg.allowIdleBlockBreak = allowIdleBlockBreakCheck.isSelected();
+			cfg.allowIdleBlockPlace = allowIdleBlockPlaceCheck.isSelected();
+			cfg.allowIdleLookAround = allowIdleLookAroundCheck.isSelected();
+			cfg.allowIdleStare = allowIdleStareCheck.isSelected();
+			cfg.allowIdleGift = allowIdleGiftCheck.isSelected();
+			cfg.allowIdleExplore = allowIdleExploreCheck.isSelected();
+			cfg.allowIdleBigGoal = allowIdleBigGoalCheck.isSelected();
+		}
 		prefixField.setText(cfg.commandPrefix);
 		SettingsPersistenceManager.update(cfg);
 		appendLater("Configuration saved.");

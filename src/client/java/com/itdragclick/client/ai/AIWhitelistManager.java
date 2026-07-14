@@ -32,14 +32,14 @@ public final class AIWhitelistManager {
 	private AIWhitelistManager() {
 	}
 
-	private static Path file() {
-		return FabricLoader.getInstance().getConfigDir().resolve("am_ai_whitelist.json");
+	private static Path getConfigFile() {
+		return FabricLoader.getInstance().getConfigDir().resolve("am-ai").resolve("am_ai_whitelist.json");
 	}
 
 	public static void load() {
 		try {
-			if (Files.exists(file())) {
-				List<String> loaded = GSON.fromJson(Files.readString(file(), StandardCharsets.UTF_8),
+			if (Files.exists(getConfigFile())) {
+				List<String> loaded = GSON.fromJson(Files.readString(getConfigFile(), StandardCharsets.UTF_8),
 						new TypeToken<List<String>>() {
 						}.getType());
 				if (loaded != null && !loaded.isEmpty()) {
@@ -59,8 +59,8 @@ public final class AIWhitelistManager {
 
 	private static void save() {
 		try {
-			Files.createDirectories(file().getParent());
-			Files.writeString(file(), GSON.toJson(new ArrayList<>(active)), StandardCharsets.UTF_8);
+			Files.createDirectories(getConfigFile().getParent());
+			Files.writeString(getConfigFile(), GSON.toJson(new ArrayList<>(active)), StandardCharsets.UTF_8);
 		} catch (Exception e) {
 			AmAI.LOGGER.error("[am-ai] Failed to save whitelist file", e);
 		}

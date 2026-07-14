@@ -30,6 +30,9 @@ public class AmAIClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		SettingsPersistenceManager.load();
+		// Relationship scores must load before the memory store: its one-time
+		// affinity migration writes into (and must not clobber) that file.
+		com.itdragclick.client.memory.PlayerRelationshipDB.init();
 		AIMemoryStore.load();
 		AIWhitelistManager.load();
 
@@ -48,6 +51,7 @@ public class AmAIClient implements ClientModInitializer {
 		com.itdragclick.client.memory.VectorDB.init();
 		com.itdragclick.client.ai.ReactiveChatManager.register();
 		com.itdragclick.client.ai.SleepManager.register();
+		com.itdragclick.client.ai.ActionHelper.init();
 
 		// Tear the dashboard down with the client so the JVM can exit cleanly.
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> AIDashboardFrame.shutdown());

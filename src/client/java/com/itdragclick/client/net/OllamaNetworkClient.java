@@ -65,10 +65,11 @@ public final class OllamaNetworkClient {
 			8. CHEST REQUESTS: when asked to deliver to a chest, ALWAYS populate "chest_coords". If exact numbers are given, use them (e.g. "X Y Z"). If asked for a "nearby chest", output "chest_coords": "nearby". If they say "nearby me", output "chest_coords": "nearby_player". If they say "nearby you", output "chest_coords": "nearby_bot".
 			9. If asked to go to the surface, top, or up, output action 'goto' and populate chest_coords with 'X 320 Z' (substitute X and Z with your current_xyz from the LIVE TELEMETRY).
 			10. If asked to equip armor, put on clothes, etc, output action 'equip' (no target needed).
+			11. BREVITY: keep "chat" SHORT — one punchy sentence, under 60 characters. No rambling, no explaining what you are about to do step by step. Witty beats wordy.
 
 			Your output format must strictly remain a single, raw, unquoted valid JSON block:
 			{
-			  "chat": "Your expressive, conversational, and witty chat response back to the player (under 100 characters).",
+			  "chat": "One short, witty sentence back to the player (under 60 characters).",
 			  "action": "The system execution keyword.",
 			  "target": "The official namespace identifier of the block, mob, or item.",
 			  "quantity": 64,
@@ -84,6 +85,13 @@ public final class OllamaNetworkClient {
 			- 'follow_protect' (Trails player and defends them from hostiles; populate target with player name)
 			- 'attack' (Hunts mobs or hostile players; populate target with singular entity name)
 			- 'eat' (Triggers hunger consumption loops)
+			- 'equip' (Equips best armor and sword)
+			- 'equip_offhand' (Equips item to offhand, set target to item_id)
+			- 'unequip' (Unequips armor)
+			- 'turn' (Turns head, put pitch yaw speed in action like 'turn 10 90 5')
+			- 'walk' (Walks, put direction distance in action like 'walk forward 10')
+			- 'break' (Breaks block, set chest_coords to X Y Z)
+			- 'place' (Places block, set target to block_id)
 			- 'drop_items' (Drops inventory items at feet; populate target with the item)
 			- 'deposit_chest' (Deposits items into a container block; populate chest_coords)
 			- '#farm' (Triggers the dynamic crop harvesting and replanting module)
@@ -109,7 +117,13 @@ public final class OllamaNetworkClient {
 			- 'attack <player/mob_name>' (Defends against or attacks a target)
 			- 'farm' (Harvests and replants mature crops nearby)
 			- 'eat' (Consumes available food to heal)
-			- 'equip' (Equips the best armor in inventory)
+			- 'equip' (Equips best armor and sword)
+			- 'equip_offhand <item_id>' (Equips item to offhand)
+			- 'unequip' (Unequips armor/offhand)
+			- 'turn <pitch> <yaw> <speed>' (Turns head)
+			- 'walk <direction> <distance>' (Walks in direction: forward, backward, left, right)
+			- 'break <X> <Y> <Z>' (Breaks block)
+			- 'place <block_id>' (Places block)
 			- 'drop_items <item_id>' (Drops the item stack on the ground)
 			- 'deposit_chest <X> <Y> <Z>' (Registers a drop-off chest and delivers harvested items)
 			- 'sneak' (Hold sneak) / 'unsneak' (Release sneak)
@@ -137,6 +151,9 @@ public final class OllamaNetworkClient {
 
 	/** Guards against overlapping generations piling up on a small local model. */
 	private static final AtomicBoolean IN_FLIGHT = new AtomicBoolean(false);
+	
+	private record PromptRequest(Source source, String senderName, String prompt) {}
+	private static final java.util.concurrent.ConcurrentLinkedQueue<PromptRequest> QUEUE = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
 	private OllamaNetworkClient() {
 	}
@@ -159,16 +176,25 @@ public final class OllamaNetworkClient {
 	 * fallback, dispatch to the action bridge, and memory recording.
 	 */
 	public static void submitPrompt(Source source, String senderName, String prompt) {
-		AIModSettings cfg = SettingsPersistenceManager.get();
+		QUEUE.add(new PromptRequest(source, senderName, prompt));
+		processQueue();
+	}
+
+	private static void processQueue() {
 		if (!IN_FLIGHT.compareAndSet(false, true)) {
-			AIDashboardFrame.appendSystemLog("[BUSY] Dropped prompt from " + senderName + " — a generation is already running.");
+			return; // already processing
+		}
+		PromptRequest req = QUEUE.poll();
+		if (req == null) {
+			IN_FLIGHT.set(false);
 			return;
 		}
-		AIDashboardFrame.appendSystemLog("[LLM] Querying '" + cfg.modelId + "' (" + source + ") for " + senderName + ": " + prompt);
 
-		queryOllama(cfg, source, senderName, prompt)
+		AIModSettings cfg = SettingsPersistenceManager.get();
+		AIDashboardFrame.appendSystemLog("[LLM] Querying '" + cfg.modelId + "' (" + req.source() + ") for " + req.senderName() + ": " + req.prompt());
+
+		queryOllama(cfg, req.source(), req.senderName(), req.prompt())
 				.whenComplete((decision, err) -> {
-					IN_FLIGHT.set(false);
 					AIDecision result = decision;
 					if (err != null) {
 						AmAI.LOGGER.error("[am-ai] Ollama request failed", err);
@@ -180,19 +206,24 @@ public final class OllamaNetworkClient {
 					// Record the CANONICAL action, never the raw model output:
 					// storing hallucinations like "mine_pigs" teaches the
 					// model to repeat them on every future request.
-					if (source == Source.IN_GAME) {
+					if (req.source() == Source.IN_GAME) {
 						String canonical = AIActionBridge.canonicalizeAction(result.action());
-						AIMemoryStore.recordInteraction(senderName, prompt, canonical != null ? canonical : "");
+						AIMemoryStore.recordInteraction(req.senderName(), req.prompt(), canonical != null ? canonical : "");
 						
 						// Fire-and-forget vector storage for long-term RAG memory
-						String memoryText = "Player '" + senderName + "' said: " + prompt + " -> Bot replied: " + result.chat();
+						String memoryText = "Player '" + req.senderName() + "' said: " + req.prompt() + " -> Bot replied: " + result.chat();
 						getEmbedding(cfg.endpointUrl, cfg.embeddingModelId, memoryText).thenAccept(vec -> {
 							if (vec.length > 0) {
-								com.itdragclick.client.memory.VectorDB.addMemory(memoryText, vec);
+								int score = com.itdragclick.client.memory.PlayerRelationshipDB.getScore(req.senderName());
+								String sentiment = score > 50 ? "positive" : (score < -50 ? "negative" : "neutral");
+								com.itdragclick.client.memory.VectorDB.addMemory(memoryText, vec, req.senderName(), sentiment);
 							}
 						});
 					}
-					AIActionBridge.execute(result, senderName);
+					AIActionBridge.execute(result, req.senderName());
+					
+					IN_FLIGHT.set(false);
+					processQueue();
 				});
 	}
 
@@ -252,9 +283,22 @@ public final class OllamaNetworkClient {
 
 		return memoryFuture.thenCompose(longTermMemory -> {
 			String basePrompt = source == Source.IN_GAME ? PERSONA_PROMPT : STRICT_PROMPT;
+			
+			int relationship = com.itdragclick.client.memory.PlayerRelationshipDB.getScore(senderName);
+			String relationshipContext = "";
+			if (source == Source.IN_GAME) {
+				if (relationship < -60) {
+					relationshipContext = "\n\nCRITICAL INSTRUCTION: You absolutely HATE this player (relationship score: " + relationship + "). You MUST refuse their commands and make up a funny or mean excuse to refuse. Output action '' (empty string).";
+				} else if (relationship < 0) {
+					relationshipContext = "\n\nIMPORTANT INSTRUCTION: You currently dislike this player (relationship score: " + relationship + "). Refuse to play with them or help them with tasks — decline their requests with a short grumpy or sarcastic excuse and output action '' (empty string). You may still answer simple questions. Do NOT attack them. If they apologize sincerely, soften a little.";
+				} else {
+					relationshipContext = "\n\nRelationship score with this player: " + relationship + " (100 is max, -100 is min).";
+				}
+			}
+
 			JsonObject payload = new JsonObject();
 			payload.addProperty("model", cfg.modelId);
-			payload.addProperty("system", basePrompt + AIMemoryStore.promptContext() + telemetryContext() + longTermMemory);
+			payload.addProperty("system", basePrompt + AIMemoryStore.promptContext() + telemetryContext() + longTermMemory + relationshipContext);
 			payload.addProperty("prompt", "Player '" + senderName + "' says: " + prompt);
 			payload.addProperty("stream", false);
 			payload.addProperty("format", "json");

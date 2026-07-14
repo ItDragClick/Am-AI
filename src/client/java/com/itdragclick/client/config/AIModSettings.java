@@ -27,6 +27,34 @@ public class AIModSettings {
 	/** Whether Baritone is allowed to break/place blocks while chasing targets in combat. */
 	public boolean combatAllowBlocks = false;
 
+	/** Whether the bot should attempt MLG water bucket drops. */
+	public boolean allowMlgWater = true;
+
+	/** Whether the bot auto-equips and raises a shield during combat. */
+	public boolean useShieldWhileFighting = true;
+
+	/** Whether the bot switches to a bow/crossbow when the target is out of melee reach. */
+	public boolean useBowCrossbow = true;
+
+	/** Whether the bot retreats to eat/heal when health drops below the threshold. */
+	public boolean fleeOnLowHealth = true;
+
+	/** Health (half-hearts) at which the low-health retreat triggers. */
+	public int lowHealthThreshold = 8;
+
+	/** Whether the bot is allowed to break blocks while idle. */
+	public boolean allowIdleBlockBreak = false;
+
+	/** Whether the bot is allowed to place blocks while idle. */
+	public boolean allowIdleBlockPlace = false;
+
+	public boolean allowIdleLookAround = true;
+	public boolean allowIdleStare = true;
+	public boolean allowIdleGift = true;
+	public boolean allowIdleExplore = true;
+	public boolean allowIdleBigGoal = true;
+	public boolean allowFollowBlockEdit = false;
+
 	public AIModSettings copy() {
 		AIModSettings out = new AIModSettings();
 		out.endpointUrl = endpointUrl;
@@ -36,6 +64,19 @@ public class AIModSettings {
 		out.active = active;
 		out.weaponPriority = weaponPriority;
 		out.combatAllowBlocks = combatAllowBlocks;
+		out.allowMlgWater = allowMlgWater;
+		out.useShieldWhileFighting = useShieldWhileFighting;
+		out.useBowCrossbow = useBowCrossbow;
+		out.fleeOnLowHealth = fleeOnLowHealth;
+		out.lowHealthThreshold = lowHealthThreshold;
+		out.allowIdleBlockBreak = allowIdleBlockBreak;
+		out.allowIdleBlockPlace = allowIdleBlockPlace;
+		out.allowIdleLookAround = allowIdleLookAround;
+		out.allowIdleStare = allowIdleStare;
+		out.allowIdleGift = allowIdleGift;
+		out.allowIdleExplore = allowIdleExplore;
+		out.allowIdleBigGoal = allowIdleBigGoal;
+		out.allowFollowBlockEdit = allowFollowBlockEdit;
 		return out;
 	}
 }
