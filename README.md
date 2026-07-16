@@ -1,42 +1,30 @@
 # 🤖 am-ai mod (v26.2) — System Architecture & Developer Guide
 
-> *A Minecraft Fabric client-side mod bridging an in-game avatar with a locally hosted Large Language Model (llama3.1:8b) via Ollama, orchestrating real-time movement, pathfinding, and world interactions using Baritone.*
+> *A Minecraft Fabric client-side mod bridging an in-game avatar with a locally hosted Large Language Model (default `deepseek-r1:8b`) via Ollama, orchestrating real-time movement, pathfinding, and world interactions using Baritone.*
 
-## ✨ Key Features (New in v26.2.1!)
-- **Lifelike Idle Behaviors**: Bot gets bored when idle and will autonomously explore, touch grass, pick flowers, stare at animals, or complain about being tired at night and seek out a bed to sleep in.
-- **Affinity & Grudges**: Remembers how you treat it. Affinities range from Hatred to Love. It will brutally mock players it hates when they die, hold a grudge if you kill it, and drop spontaneous gifts at the feet of players it loves.
-- **Survival Instincts**: Automatically eats when hungry or low on health. Eats Golden Apples in critical combat. Swims up for air and breaks ceilings if drowning.
-- **Advanced Control Dashboard**: Features a modern Java Swing UI with smooth animated horizontal page sliding, a live task tracker, and robust Hold-to-Confirm safety buttons to prevent accidental task cancellation or memory wipes.
+## ✨ Key Features
+- **Player-Grade Combat**: Critical hits (sprint-cancel, jump, swing on the way down), the axe→mace stun slam, the mace jump + wind-charge air combo, predictive bow/crossbow leading, shield timing that never swings through its own block, mounted spear charge passes, creeper backpedals, low-health retreats, and MLG water clutches.
+- **Lifelike Idle Behaviors**: Bot gets bored when idle and will autonomously explore, touch grass, pick flowers, stare at animals, start mini-games with nearby players, or complain about being tired at night and seek out a bed to sleep in.
+- **Affinity & Grudges**: Remembers how you treat it. Scores run from Hatred to Love (everyone starts neutral). It will brutally mock players it dislikes when they die, hold a grudge if you kill it, forgive you for a dropped flower, and drop spontaneous gifts at the feet of players it loves.
+- **Survival Instincts**: Automatically eats when hungry or low on health (lowering its shield first). Eats Golden Apples in critical combat. Swims up for air and breaks ceilings if drowning.
+- **Autonomous Crafting & Gathering**: Recursive craft planning, ore-chain mining with tool gating, stock counting, and delivery to you or a chest.
+- **Advanced Control Dashboard**: Modern Java Swing UI (Luna theme, FlatLaf) with animated page sliding, live task tracker, real session stats, combat tuning sliders, saveable presets, quick toggles, and Hold-to-Confirm safety buttons.
 
 👉 **Check out the [Full Bot Capabilities Guide (what_bot_can_do.md)](what_bot_can_do.md) for a comprehensive list of all supported commands and behaviors!**
 
+👉 **Developers:** [CLAUDE.md](CLAUDE.md) carries the full class-by-class code map and architecture notes.
+
 ---
 
-## ✅ Implementation Status & Code Map (updated 2026-07-12)
+## ✅ Build Status
 
-The full architecture described below is now implemented and building:
 ```bash
-gradlew build → build/libs/am-ai-a0.1.jar
+gradlew build → build/libs/am-ai-a0.6.jar
 ```
 
-All AI code lives in the **client source set**:
+### 📋 Version 26.2 Baritone Note
 
-| Class | Path | Role |
-|---|---|---|
-| `AmAIClient` | `AmAIClient.java` | Client entrypoint: loads config, forces `java.awt.headless=false` and launches the Swing dashboard explicitly on the EDT via `SwingUtilities.invokeLater` (never on the render thread), registers chat hooks, disposes the dashboard on `ClientLifecycleEvents.CLIENT_STOPPING`. |
-| `AIModSettings` | `config/AIModSettings.java` | GSON-serializable settings (endpoint URL, model ID, prefix, active flag). |
-| `SettingsPersistenceManager` | `config/SettingsPersistenceManager.java` | Thread-safe load/save to `config/ai_companion_settings.json` (via `FabricLoader.getConfigDir()`). |
-| `AIDashboardFrame` | `ui/AIDashboardFrame.java` | GridBagLayout JFrame: settings panel (Save Config / Test Connection / Active radio indicator), thread-safe static `appendSystemLog` console, manual prompt panel. Manual prompts starting with a known action verb (`goto`, `mine`, `deposit_chest`, …) bypass the LLM entirely and execute as direct structural overrides; anything else queries the LLM with the strict terminal persona. `HIDE_ON_CLOSE` so closing it never kills the game. |
-| `ChatEventListener` | `chat/ChatEventListener.java` | Inbound chat interceptor using Fabric's `ClientReceiveMessageEvents` (`CHAT` + `GAME`) rather than a hand-written `ClientPacketListener` mixin. Prefix filtering, self-echo suppression, active-flag gating. **Absolute cancellation override**: "!AI stop" / "!AI stop follow" (case-insensitive) from a whitelisted player bypasses the LLM entirely — `BaritoneBridge.hardStop()` (cancelEverything + `getFollowProcess().cancel()`), `HarvestManager.cancel()`, `SurvivalMonitor.clearAllOrders()` on the main thread. Stop requests must never round-trip through the model. |
-| `InventoryHelper` | `ai/InventoryHelper.java` | Pre-action inventory prep (main thread only). Hotbar conventions: slot 0 = weapon, slot 1 = food. `equipBestWeapon` scans slots 0-35, ranks by WEAPON component + ATTACK_DAMAGE modifiers, SWAP-clicks the winner into slot 0 and selects it. `stageFoodInHotbar` deep-scans all 36 slots for `DataComponents.FOOD` and stages into slot 1. `dropAllOf(itemId)` = drop_items system: selects each matching stack (swapping backpack stacks up first) and `player.drop(true)` drops whole stacks at the bot's feet. InventoryMenu slot map: hotbar H → menu slot 36+H, main inventory N → menu slot N. |
-| `OllamaNetworkClient` | `net/OllamaNetworkClient.java` | Async `java.net.http.HttpClient` POST to `/api/generate` (`stream:false`, `format:"json"`). Split-persona system via `Source` enum: `IN_GAME` gets the witty Neuro-sama-style `PERSONA_PROMPT`, `DASHBOARD`/`SYSTEM` get the rigid `STRICT_PROMPT`; both get the memory bank (`AIMemoryStore.promptContext()`) appended to the system window. Balanced-brace JSON extraction, fallback `{"chat": "My thoughts got jumbled!", "action": "stop"}` (missing `action` key = `""` — just chatting, must not cancel harvest plans), in-flight guard, `testConnection` GET probe. Records each in-game interaction into short-term memory. |
-| `AIMemoryStore` | `memory/AIMemoryStore.java` | Persistent memory engine at `config/am_ai_memory.json` (GSON, synchronized): `short_term_history` (rolling 15 interactions player-input→action), `long_term_declarative` facts, `known_chest` drop-off coordinates. `promptContext()` renders the bank for LLM injection every request. |
-| `HarvestManager` | `ai/HarvestManager.java` | Unified multi-step state machine on `END_CLIENT_TICK`. **Block chain**: MINING (Baritone mines, count watched vs 16-item target) → RETURN_TO_PLAYER (repath to requester's live position every 2s) → within 2 blocks `drop_items` at their feet → IDLE. **Porkchop Workflow (hunt chain)**: `MOB_DROPS` map (pig→porkchop, cow→beef, chicken→chicken, sheep→mutton, rabbit→rabbit); HUNTING: between kills, walks over the nearest matching ground `ItemEntity` (24-block scan) to vacuum drops — kills alone never raise the inventory count — then re-feeds `requestAttack(mob)` until 3 drops collected, then return + drop. `attack <farm animal>` auto-routes into the hunt chain (singular-ized, requires a requester). GOTO_CHEST/DEPOSITING remain the explicit `deposit_chest` container path (`useItemOn` + `QUICK_MOVE` + `closeContainer`). Combat interrupts resume via `reissueCurrentStep()`. |
-| `AIActionBridge` | `ai/AIActionBridge.java` | Re-schedules onto the game thread via `Minecraft.getInstance().execute(...)`, sends the `chat` value with `getConnection().sendChat(...)` (≤100 chars), parses the full action grammar: `goto X Y Z`, `mine <block>`, `mine_area X1 Y1 Z1 X2 Y2 Z2`, `follow <player>`, `attack <name>`, `eat`, `click_respawn`, `stop`. Shared safe integer parsing (floors decimals); any malformed coordinates trigger a safety `stop`. Placeholder sanitizer (`cleanTarget`): small models echo the instruction card literally (`follow <player_name>`, `attack player/Steve`) — strips angle brackets/quotes, keeps text after `/`, and resolves placeholders or self-references ("me") to the requesting player's name. **`canonicalizeAction` (pure, any-thread)**: normalizes raw LLM actions before BOTH execution and memory recording — attack aliases (kill/hunt/slay/fight/hit), fused hallucinations (`mine_pigs`/`kill_pig` → `attack pig`), mob args given to `mine` rerouted to `attack`, plurals singularized. Critical: memory must only ever store canonical actions — recording raw output like `mine_pigs` re-injects it via the prompt's memory bank and teaches the model to repeat its own mistakes forever (observed 2026-07-12); `AIMemoryStore.load` also scrubs poisoned entries from disk. |
-| `BaritoneBridge` | `ai/BaritoneBridge.java` | Direct (no reflection) calls into the official Baritone API: `getCustomGoalProcess().setGoalAndPath(new GoalBlock(...))`, `getMineProcess().mineByName(id)`, `getBuilderProcess().clearArea(corner1, corner2)` (mine_area), `getFollowProcess().follow(predicate)` (follow), `getPathingBehavior().cancelEverything()`. Combat interrupt support: `pauseForCombat()` saves the current custom goal + cancels everything; `resumeRememberedGoal()` re-issues it. Compiles against `libs/baritone-api-fabric-26.2-SNAPSHOT.jar`. Guards: mod-presence check (`baritone` / `baritone-meteor` ids) and `LinkageError` handler that diagnoses the obfuscated-standalone-jar case. |
-| `SurvivalMonitor` | `ai/SurvivalMonitor.java` | Per-tick common-sense layer on `ClientTickEvents.END_CLIENT_TICK` (main thread). **Friendly whitelist** (`FRIENDLY_PLAYERS`: Golden_Allay, taffer2630): never targeted — attack orders refused, threat scans skip them, final `engage()` guard. **Combat interceptor**: on damage taken or health < 12.0f — attacker heuristic (client `getLastHurtByMob()` NOT reliably synced for player attackers: synced attacker → nearest `Monster` → nearest other `Player`; passive mobs never qualify) within 5 blocks; pauses Baritone (goal cached), locks onto the threat entity across ticks. **PvP movement engine**: >8 blocks Baritone-chases moving coordinates (repath throttled to 1/sec), 3–8 blocks manual `keyUp` + `setSprinting(true)` chase, strikes ≤3.5 blocks gated by `getAttackStrengthScale`; gives up beyond 20-block tracking radius; post-combat restores the saved goal AND re-issues the harvest plan step. **Auto-eat**: hunger <14 triggers `InventoryHelper.stageFoodInHotbar` (full 0-35 scan, food staged in hotbar slot 1), `keyUse` held until fed, previous slot restored; hunger <6 mid-combat = retreat 5 blocks (Baritone goal away from threat), eat, re-engage above 12. Weapon staging delegates to `InventoryHelper.equipBestWeapon` (slot 0). **Death policy** (user decision 2026-07-12): NEVER return to the death point — always re-gear fresh (logs "Items lost permanently. Re-gearing strategy activated.", starts oak_log harvest). **Delayed respawn chat**: the server rejects chat from dead players, so LLM chat produced on the death screen is queued in `pendingRespawnChat` (via `queueRespawnChat`, fed by `AIActionBridge.sendChat`'s isDeadOrDying check) and flushed by the tick loop only once fully revived (alive + health > 0). `clearAllOrders()` = combat/attack wipe for the stop override. |
-
-### 📋 Version 26.2 Naming Notes `baritone-standalone-fabric-*.jar` is **ProGuard-obfuscated** — every `baritone.api` method is renamed to `a`/`b`, causing both reflection lookups and direct API calls to fail (`NoSuchMethodException` / `NoSuchMethodError`).
+`baritone-standalone-fabric-*.jar` is **ProGuard-obfuscated** — every `baritone.api` method is renamed to `a`/`b`, causing both reflection lookups and direct API calls to fail (`NoSuchMethodException` / `NoSuchMethodError`).
 
 ✅ **Always use the API build:**
 - Compiling: `libs/baritone-api-fabric-26.2-SNAPSHOT.jar`
@@ -45,8 +33,6 @@ All AI code lives in the **client source set**:
 📚 Source: https://github.com/IzumiiKonata/baritone (branch `26.2`) → `./gradlew build` → `dist/`
 
 > **Note:** `gradlew build` passes; LLM response parser smoke-tested against clean JSON, markdown-fenced JSON, prose-wrapped JSON, malformed output, garbage envelopes, and missing keys — all fall back safely.
-
----
 
 ---
 
@@ -100,26 +86,42 @@ When Minecraft boots, a native Java Swing JFrame launches independently, running
 
 | Component | Function |
 |---|---|
-| **⚙️ Settings Panel** | Modify endpoint URL, model config, command prefix; display LLM parser state |
+| **⚙️ Settings Panel** | Endpoint URL, model, command prefix, weapon priority; toggle switches for every combat/idle behavior; live-applied combat tuning sliders (scrollable page) |
+| **🎛️ Presets** | Save / load / delete named snapshots of the whole configuration (`config/am-ai/presets/<name>.json`) |
+| **⚡ Quick Toggles** | The most-used switches, applied the moment you click them (no Save needed) |
+| **📌 Task Tracker** | Live view of the active task and the paused LIFO queue |
+| **📈 System Status & Activity Overview** | Real uptime, endpoint/model, plus session counters (tasks, play time, LLM requests, fights) |
 | **📊 Telemetry Console** | Custom scroll-pane with detailed text logs |
 | **💬 Direct Console** | Send LLM prompts directly from host PC (no in-game chat needed) |
+| **🛑 Safety** | Hold-to-Confirm EMERGENCY STOP, Reset Memory, Reset Feelings |
 
 ---
 
 ## 📋 JSON Configuration & Persistence
 
-Settings persist locally inside `.minecraft/config/ai_companion_settings.json` using Minecraft's bundled **GSON** parser.
+All mod data lives under `.minecraft/config/am-ai/` using Minecraft's bundled **GSON** parser:
+`ai_companion_settings.json`, `am_ai_memory.json`, `am_ai_vectors.json`, `relationships.json`, `am_ai_whitelist.json`, plus `presets/`.
 
 ```json
 {
-  "endpointUrl": "http://localhost:11434",
-  "modelId": "llama3.1:8b",
-  "commandPrefix": "!ai",
-  "active": true
+  "endpointUrl": "http://localhost:11434/api/generate",
+  "modelId": "deepseek-r1:8b",
+  "embeddingModelId": "nomic-embed-text",
+  "commandPrefix": "!AI",
+  "active": true,
+  "weaponPriority": "Swords",
+  "useShieldWhileFighting": true,
+  "useMaceAttack": false,
+  "useCritAttack": true,
+  "spamSwingDelayTicks": 4,
+  "macePunishMaxHits": 5,
+  "shieldBreakRangeTenths": 32,
+  "lanceChargeDistance": 8,
+  "lowHealthThreshold": 8
 }
 ```
 
-No external dependencies needed — GSON is native to Minecraft.
+Missing keys fall back to Java defaults, so older config files keep working. No external dependencies needed — GSON is native to Minecraft.
 
 ---
 
@@ -138,7 +140,7 @@ A Fabric event listener intercepts incoming server chat packets at the networkin
 
 ---
 
-## 🧠 Ollama API Integration & Llama3.1:8b System Prompt
+## 🧠 Ollama API Integration & System Prompt
 
 The API payload wraps all requests with dual-persona system (`OllamaNetworkClient.Source`):
 
@@ -149,14 +151,18 @@ The API payload wraps all requests with dual-persona system (`OllamaNetworkClien
 | **IN_GAME** | `PERSONA_PROMPT` | Witty, self-aware, Neuro-sama-inspired (jokes allowed) |
 | **DASHBOARD / SYSTEM** | `STRICT_PROMPT` | Rigid command terminal (no flair) |
 
-Both inject the memory bank (`AIMemoryStore.promptContext()`) into every request.
+Both inject the memory bank (`AIMemoryStore.promptContext()`), the recovered long-term memories (VectorDB/RAG), live telemetry, and a per-sender relationship instruction into every request.
 
 ### 📤 Output Format
 
 ```json
 {
   "chat": "Your response text here",
-  "action": "goto 100 64 -200"
+  "action": "goto 100 64 -200",
+  "target": "diamond_ore",
+  "quantity": 16,
+  "chest_coords": "100 64 -200",
+  "duration_seconds": 60
 }
 ```
 
@@ -165,13 +171,19 @@ Both inject the memory bank (`AIMemoryStore.promptContext()`) into every request
 goto <X> <Y> <Z>
 mine <block_id>
 mine_area <X1> <Y1> <Z1> <X2> <Y2> <Z2>
+farm
 follow <player_name>
+follow_protect <player_name>
 attack <singular_mob_or_player_name>
+mount / dismount
 eat
+sleep / leave_bed
 drop_items <item_id>
 deposit_chest <X> <Y> <Z>
+equip / equip_offhand / unequip
 sneak / unsneak
 click_respawn
+cancel
 stop
 '' (empty = just chatting, no action cancel)
 ```
@@ -225,39 +237,40 @@ BaritoneAPI.getProvider().getPrimaryBaritone()
 
 ## 🚀 Installation, Compilation & Run Instructions
 
----
-
-## 🚀 Installation, Compilation & Run Instructions
-
 ### 1️⃣ Configure the Build Environment
 
-Add Minecraft 26.2, Fabric API, and Baritone API dependencies in `build.gradle`:
+Minecraft 26.2, Fabric API, Baritone API, and FlatLaf (bundled into the mod jar) are declared in `build.gradle`:
 
 ```gradle
 dependencies {
     // Minecraft 26.2, Fabric Loader, Fabric API
     // Configure for your environment (unobfuscated Mojang names)
-    
+
     // Local Baritone API JAR
     compileOnly files("libs/baritone-api-fabric-26.2-SNAPSHOT.jar")
+
+    // Dashboard look & feel — jar-in-jar so no extra install step
+    implementation "com.formdev:flatlaf:3.5.1"
+    include "com.formdev:flatlaf:3.5.1"
 }
 ```
 
-> **Note:** Use the API build, NOT standalone (ProGuard-obfuscated).
+> **Note:** Use the Baritone API build, NOT standalone (ProGuard-obfuscated).
 
 ### 2️⃣ Verify Your Local LLM Engine
 
-Ensure Ollama is running with `llama3.1:8b`:
+Ensure Ollama is running with the model you configured (default `deepseek-r1:8b`, embeddings `nomic-embed-text`):
 
 ```bash
-ollama run llama3.1:8b
+ollama run deepseek-r1:8b
+ollama pull nomic-embed-text
 ```
 
 Test the endpoint:
 
 ```bash
 curl http://localhost:11434/api/generate -d '{
-  "model": "llama3.1:8b",
+  "model": "deepseek-r1:8b",
   "prompt": "Say hello!"
 }'
 ```
@@ -268,17 +281,17 @@ curl http://localhost:11434/api/generate -d '{
 ./gradlew build
 ```
 
-Output: `build/libs/am-ai-a0.1.jar`
+Output: `build/libs/am-ai-a0.6.jar`
 
-Move to mods folder:
+Move to mods folder (alongside the Baritone **api** jar and Fabric API):
 ```bash
-cp build/libs/am-ai-a0.1.jar ~/.minecraft/mods/
+cp build/libs/am-ai-a0.6.jar ~/.minecraft/mods/
 ```
 
 ### 4️⃣ Run the Game
 
 Launch Minecraft 26.2 via Fabric. The mod automatically:
-- Loads configuration from `config/ai_companion_settings.json`
+- Loads configuration from `config/am-ai/ai_companion_settings.json`
 - Launches the Swing dashboard window
 - Registers chat event listeners
 - Connects to local Ollama instance
@@ -305,7 +318,9 @@ This version uses **unobfuscated Mojang names** (not Yarn mappings):
 | `player.respawn()` | `LocalPlayer.respawn()` | Respawn logic |
 | `isDead()` | `isDeadOrDying()` | Death state check |
 
-**Default Model:** `llama3.1:8b` (fully configurable from dashboard)
+Also gone in 26.2: `Level.getDayTime()` (use `getOverworldClockTime() % 24000`), `SwordItem` (weapons are data-driven), `isEdible()`. Spears carry the `KINETIC_WEAPON` component; `MaceItem.canSmashAttack` needs `fallDistance > 1.5`.
+
+**Default Model:** `deepseek-r1:8b` (embeddings `nomic-embed-text`) — both fully configurable from the dashboard. The in-game persona is named **'grape'**.
 
 ---
 
@@ -343,4 +358,4 @@ This version uses **unobfuscated Mojang names** (not Yarn mappings):
 
 ---
 
-> **Last updated:** 2026-07-12 | **Version:** am-ai v26.2 | **Status:** ✅ Fully Implemented & Tested
+> **Last updated:** 2026-07-17 | **Version:** am-ai v26.2 (a0.6) | **Status:** ✅ Fully Implemented & Tested

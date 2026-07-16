@@ -13,6 +13,8 @@ public final class SleepManager {
 
     private static BlockPos targetBed = null;
     private static int interactionCooldown = 0;
+    /** Throttle for the auto-sleep check (bed scan is a 61x21x61 sweep). */
+    private static int autoCheckCooldown = 0;
 
     private SleepManager() {}
 
@@ -57,7 +59,11 @@ public final class SleepManager {
     }
 
     private static void onTick(Minecraft mc) {
-        if (mc.player == null || mc.level == null || targetBed == null) {
+        if (mc.player == null || mc.level == null) {
+            return;
+        }
+        if (targetBed == null) {
+            tickAutoSleep(mc);
             return;
         }
         
@@ -82,5 +88,40 @@ public final class SleepManager {
             mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hitResult);
             interactionCooldown = 20; // try again in 1 second if failed
         }
+    }
+
+    /**
+     * Auto-sleep (setting-gated): once it's sleepable night (or a
+     * thunderstorm) and the bot is fully idle — no tasks, no combat, not
+     * riding — walk to the nearest bed and sleep. Checked every 5 seconds.
+     */
+    private static void tickAutoSleep(Minecraft mc) {
+        if (--autoCheckCooldown > 0) {
+            return;
+        }
+        autoCheckCooldown = 100; // 5s between checks (and between failed bed scans)
+        if (!com.itdragclick.client.config.SettingsPersistenceManager.get().autoSleepAtNight) {
+            return;
+        }
+        if (mc.player.isSleeping() || mc.player.isPassenger()) {
+            return;
+        }
+        long timeOfDay = mc.level.getOverworldClockTime() % 24000L;
+        boolean sleepable = timeOfDay >= 12542 || mc.level.isThundering();
+        if (!sleepable) {
+            return;
+        }
+        // Truly idle only: no task (attack/follow orders count as tasks), no
+        // combat, no live Baritone activity (pathing, farm/follow process, a
+        // combat-paused goal waiting to resume), not mid-meal.
+        if (AIStateManager.anythingActive() || SurvivalMonitor.isInCombat()
+                || HarvestManager.isBusy() || FarmManager.isBusy()
+                || CraftPlanner.isBusy() || MountManager.isBusy()
+                || SurvivalMonitor.isEating()
+                || BaritoneBridge.isAnyProcessActive()) {
+            return;
+        }
+        AIDashboardFrame.appendSystemLog("[SLEEP] Night time and nothing to do — auto-sleeping.");
+        startSleep();
     }
 }

@@ -39,8 +39,48 @@ public class AIModSettings {
 	/** Whether the bot retreats to eat/heal when health drops below the threshold. */
 	public boolean fleeOnLowHealth = true;
 
+	/**
+	 * Whether the bot proactively attacks nearby hostile mobs while a work
+	 * task (farming/mining/crafting) is running, instead of waiting to be hit.
+	 * Neutral-until-provoked mobs (zombified piglins...) are never first-struck.
+	 */
+	public boolean autoDefendWhileWorking = true;
+
+	/** Whether the bot walks to a bed and sleeps on its own at night when idle. */
+	public boolean autoSleepAtNight = true;
+
+	/**
+	 * Whether the bot may open melee engagements with the mace smash combo:
+	 * jump, wind charge at the feet at the jump apex, mace hit while falling.
+	 * Requires BOTH a mace and at least one wind charge in the inventory —
+	 * without wind charges the mace is never used at all.
+	 */
+	public boolean useMaceAttack = false;
+
+	/**
+	 * Whether the bot jumps and swings on the way down for critical hits
+	 * (vanilla rule: falling, not sprinting, not in water/on a ladder = 1.5x).
+	 */
+	public boolean useCritAttack = true;
+
 	/** Health (half-hearts) at which the low-health retreat triggers. */
 	public int lowHealthThreshold = 8;
+
+	// ------------------------------------------------ combat tuning (sliders)
+	/** Ticks between cooldown-bypass spam swings (axe shield-break / mace punish). */
+	public int spamSwingDelayTicks = 4;
+	/** Ground mace hits after a shield break before returning to the normal weapon. */
+	public int macePunishMaxHits = 5;
+	/** Run-up room (blocks) the mounted spear needs before committing to a charge. */
+	public int lanceChargeDistance = 8;
+	/** Distance where axe shield-break swings start, in tenths of a block (32 = 3.2). */
+	public int shieldBreakRangeTenths = 32;
+	/** Cooldown (ticks) between mace jump/wind-charge combo attempts. */
+	public int maceComboCooldownTicks = 60;
+	/** Ticks holding the food with the use key UP (shield down) before chewing. */
+	public int eatWarmupTicks = 20;
+	/** Ticks between crit jumps (also caps how long a swing waits for the fall). */
+	public int critJumpCooldownTicks = 12;
 
 	/** Whether the bot is allowed to break blocks while idle. */
 	public boolean allowIdleBlockBreak = false;
@@ -68,7 +108,18 @@ public class AIModSettings {
 		out.useShieldWhileFighting = useShieldWhileFighting;
 		out.useBowCrossbow = useBowCrossbow;
 		out.fleeOnLowHealth = fleeOnLowHealth;
+		out.autoDefendWhileWorking = autoDefendWhileWorking;
+		out.autoSleepAtNight = autoSleepAtNight;
+		out.useMaceAttack = useMaceAttack;
+		out.useCritAttack = useCritAttack;
 		out.lowHealthThreshold = lowHealthThreshold;
+		out.spamSwingDelayTicks = spamSwingDelayTicks;
+		out.macePunishMaxHits = macePunishMaxHits;
+		out.lanceChargeDistance = lanceChargeDistance;
+		out.shieldBreakRangeTenths = shieldBreakRangeTenths;
+		out.maceComboCooldownTicks = maceComboCooldownTicks;
+		out.eatWarmupTicks = eatWarmupTicks;
+		out.critJumpCooldownTicks = critJumpCooldownTicks;
 		out.allowIdleBlockBreak = allowIdleBlockBreak;
 		out.allowIdleBlockPlace = allowIdleBlockPlace;
 		out.allowIdleLookAround = allowIdleLookAround;

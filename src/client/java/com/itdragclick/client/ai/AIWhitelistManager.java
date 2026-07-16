@@ -74,9 +74,11 @@ public final class AIWhitelistManager {
 		if (name == null) {
 			return false;
 		}
-		String stripped = name.strip();
+		// Floodgate prepends '.'/'*' to Bedrock names — compare without it so a
+		// whitelist entry matches whether or not the prefix was stripped upstream.
+		String stripped = name.strip().replaceAll("^[.*]+", "");
 		for (String entry : active) {
-			if (entry.equalsIgnoreCase(stripped)) {
+			if (entry.strip().replaceAll("^[.*]+", "").equalsIgnoreCase(stripped)) {
 				return true;
 			}
 		}

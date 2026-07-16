@@ -38,12 +38,23 @@ public class SlidingPanel extends JPanel {
 
     public void showPanel(String key, boolean slideToLeft) {
         if (isAnimating || key.equals(currentKey)) return;
-        
+
         Component oldComp = panels.get(currentKey);
         Component newComp = panels.get(key);
-        
+
         if (oldComp == null || newComp == null) return;
-        
+
+        // Not laid out yet (called while building the window, or hidden): there
+        // is nothing to animate and a 0x0 BufferedImage throws — swap straight.
+        if (getWidth() <= 0 || getHeight() <= 0) {
+            currentKey = key;
+            removeAll();
+            add(newComp, BorderLayout.CENTER);
+            revalidate();
+            repaint();
+            return;
+        }
+
         this.slideLeft = slideToLeft;
         this.currentKey = key;
 

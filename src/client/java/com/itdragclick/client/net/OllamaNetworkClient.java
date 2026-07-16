@@ -66,6 +66,8 @@ public final class OllamaNetworkClient {
 			9. If asked to go to the surface, top, or up, output action 'goto' and populate chest_coords with 'X 320 Z' (substitute X and Z with your current_xyz from the LIVE TELEMETRY).
 			10. If asked to equip armor, put on clothes, etc, output action 'equip' (no target needed).
 			11. BREVITY: keep "chat" SHORT — one punchy sentence, under 60 characters. No rambling, no explaining what you are about to do step by step. Witty beats wordy.
+			12. STATS QUESTIONS: when asked about your health, hunger, gear, inventory, position, the server, the weather, or who's online, answer from the LIVE TELEMETRY values — NEVER invent numbers or names.
+			13. RIDING: 'ride the horse'/'get on the boat' means action 'mount' (target optional — nearest ride is used). 'get off'/'dismount' means action 'dismount'. You automatically dismount when given a movement task.
 
 			Your output format must strictly remain a single, raw, unquoted valid JSON block:
 			{
@@ -95,6 +97,8 @@ public final class OllamaNetworkClient {
 			- 'drop_items' (Drops inventory items at feet; populate target with the item)
 			- 'deposit_chest' (Deposits items into a container block; populate chest_coords)
 			- '#farm' (Triggers the dynamic crop harvesting and replanting module)
+			- 'mount' (Rides the nearest horse/boat/minecart; optionally populate target with an entity name)
+			- 'dismount' (Gets off the current ride)
 			- 'sneak' / 'unsneak' (Crouch control)
 			- 'sleep' (Finds a nearby bed and sleeps in it)
 			- 'leave_bed' (Wakes up and leaves the bed)
@@ -127,6 +131,8 @@ public final class OllamaNetworkClient {
 			- 'drop_items <item_id>' (Drops the item stack on the ground)
 			- 'deposit_chest <X> <Y> <Z>' (Registers a drop-off chest and delivers harvested items)
 			- 'sneak' (Hold sneak) / 'unsneak' (Release sneak)
+			- 'mount <entity_name>' (Rides a nearby horse/boat/minecart; name optional)
+			- 'dismount' (Gets off the current ride)
 			- 'sleep' (Sleeps in bed)
 			- 'leave_bed' (Leaves the bed)
 			- 'click_respawn' (Respawns if dead)
@@ -176,6 +182,7 @@ public final class OllamaNetworkClient {
 	 * fallback, dispatch to the action bridge, and memory recording.
 	 */
 	public static void submitPrompt(Source source, String senderName, String prompt) {
+		com.itdragclick.client.ai.AIStats.llmRequest();
 		QUEUE.add(new PromptRequest(source, senderName, prompt));
 		processQueue();
 	}
@@ -415,16 +422,95 @@ public final class OllamaNetworkClient {
 			}
 			String nearby = entParts.isEmpty() ? "none" : String.join(", ", entParts);
 
+			// --- own stats
+			var food = mc.player.getFoodData();
+			String hunger = food.getFoodLevel() + "/20 (saturation " + String.format("%.1f", food.getSaturationLevel()) + ")";
+			String xp = String.valueOf(mc.player.experienceLevel);
+			String armor = String.valueOf(mc.player.getArmorValue());
+
+			StringBuilder equipped = new StringBuilder();
+			appendEquip(equipped, "main", mc.player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND));
+			appendEquip(equipped, "offhand", mc.player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND));
+			appendEquip(equipped, "head", mc.player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD));
+			appendEquip(equipped, "chest", mc.player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.CHEST));
+			appendEquip(equipped, "legs", mc.player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.LEGS));
+			appendEquip(equipped, "feet", mc.player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.FEET));
+			String equippedStr = equipped.length() == 0 ? "nothing" : equipped.toString();
+
+			java.util.List<String> effectParts = new java.util.ArrayList<>();
+			for (var effect : mc.player.getActiveEffects()) {
+				effectParts.add(effect.getEffect().value().getDisplayName().getString()
+						+ " " + (effect.getAmplifier() + 1) + " (" + (effect.getDuration() / 20) + "s)");
+			}
+			String effects = effectParts.isEmpty() ? "none" : String.join(", ", effectParts);
+
+			// --- world / server
+			long timeOfDay = mc.level.getOverworldClockTime() % 24000L;
+			String dayLabel = timeOfDay < 12000 ? "day" : (timeOfDay < 13000 ? "dusk" : (timeOfDay < 23000 ? "night" : "dawn"));
+			String weather = mc.level.isThundering() ? "thunderstorm" : (mc.level.isRaining() ? "rain" : "clear");
+			String dimension = mc.level.dimension().identifier().getPath();
+			String biome = mc.level.getBiome(mc.player.blockPosition()).unwrapKey()
+					.map(k -> k.identifier().getPath()).orElse("unknown");
+			String gamemode = mc.gameMode != null ? mc.gameMode.getPlayerMode().getName() : "unknown";
+			String riding = mc.player.getVehicle() != null
+					? mc.player.getVehicle().getName().getString() : "nothing";
+
+			String server = mc.getCurrentServer() != null ? mc.getCurrentServer().ip : "singleplayer";
+			String players = "unknown";
+			String ping = "n/a";
+			if (mc.getConnection() != null) {
+				java.util.List<String> names = new java.util.ArrayList<>();
+				int self = 0;
+				for (var info : mc.getConnection().getOnlinePlayers()) {
+					if (names.size() < 20) {
+						names.add(info.getProfile().name());
+					}
+					if (info.getProfile().id().equals(mc.player.getGameProfile().id())) {
+						self = info.getLatency();
+					}
+				}
+				int total = mc.getConnection().getOnlinePlayers().size();
+				players = total + " online: " + String.join(", ", names)
+						+ (total > names.size() ? " (+" + (total - names.size()) + " more)" : "");
+				ping = self + "ms";
+			}
+
+			String air = mc.player.getAirSupply() < mc.player.getMaxAirSupply()
+					? "\nair: " + mc.player.getAirSupply() + "/" + mc.player.getMaxAirSupply() : "";
+
 			return "\n\nLIVE TELEMETRY (real values, use them when asked):\n"
 					+ "current_xyz: " + mc.player.blockPosition().toShortString() + "\n"
 					+ "health: " + health + "\n"
+					+ "hunger: " + hunger + "\n"
+					+ "armor_points: " + armor + "\n"
+					+ "xp_level: " + xp + "\n"
+					+ "effects: " + effects + air + "\n"
+					+ "equipped: " + equippedStr + "\n"
+					+ "selected_hotbar_slot: " + mc.player.getInventory().getSelectedSlot() + "\n"
+					+ "riding: " + riding + "\n"
+					+ "gamemode: " + gamemode + "\n"
+					+ "dimension: " + dimension + "\n"
+					+ "biome: " + biome + "\n"
+					+ "time: " + dayLabel + " (tick " + timeOfDay + "), weather: " + weather + "\n"
 					+ "world_age_days: " + day + "\n"
+					+ "server: " + server + " (ping " + ping + ")\n"
+					+ "players: " + players + "\n"
 					+ "looking_at: " + lookingAt + "\n"
 					+ "nearby_entities: " + nearby + "\n"
 					+ "inventory: " + inv;
 		} catch (Exception e) {
 			return "";
 		}
+	}
+
+	private static void appendEquip(StringBuilder out, String label, net.minecraft.world.item.ItemStack stack) {
+		if (stack == null || stack.isEmpty()) {
+			return;
+		}
+		if (out.length() > 0) {
+			out.append(", ");
+		}
+		out.append(label).append('=').append(com.itdragclick.client.ai.InventoryHelper.itemIdOf(stack));
 	}
 
 	/**

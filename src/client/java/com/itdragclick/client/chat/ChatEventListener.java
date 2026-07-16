@@ -27,8 +27,53 @@ import java.util.regex.Pattern;
  */
 public final class ChatEventListener {
 
-	/** Matches server-formatted chat lines like {@code <Steve> hello}. */
-	private static final Pattern VANILLA_CHAT = Pattern.compile("^<([A-Za-z0-9_]{1,16})>\\s*(.*)$");
+	/**
+	 * Ordered chat-line shapes, first match wins. Beyond the vanilla
+	 * {@code <Steve> hello} form these cover Geyser/Floodgate relays, whose
+	 * Bedrock names carry a {@code .}/{@code *} prefix and may contain spaces,
+	 * and whose plugins commonly format chat as {@code name » msg},
+	 * {@code [Bedrock] name: msg} or {@code name: msg}. The generic
+	 * colon form is last on purpose: false positives on server broadcasts are
+	 * harmless because handleIncoming still requires the command prefix.
+	 */
+	private static final Pattern[] CHAT_PATTERNS = {
+			Pattern.compile("^<([.*]?[A-Za-z0-9_ ]{1,32})>\\s*(.*)$"),
+			Pattern.compile("^\\[Bedrock\\]\\s*([.*]?[A-Za-z0-9_ .]{1,32}?)\\s*[:»]\\s*(.*)$"),
+			Pattern.compile("^([.*]?[A-Za-z0-9_.]{1,32})\\s*»\\s*(.*)$"),
+			Pattern.compile("^([.*]?[A-Za-z0-9_.]{1,32}):\\s*(.*)$")
+	};
+
+	/** Extracts {sender, text} from a formatted chat line, or null. */
+	private static String[] parseSenderAndText(String raw) {
+		for (Pattern p : CHAT_PATTERNS) {
+			Matcher m = p.matcher(raw);
+			if (m.matches()) {
+				return new String[]{m.group(1).trim(), m.group(2)};
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Canonical player name: Floodgate prepends {@code .} or {@code *} to
+	 * Bedrock names — strip it so the whitelist, self-echo guard and the
+	 * relationship DB all key on the same string.
+	 */
+	private static String normalizeSender(String name) {
+		if (name == null) {
+			return null;
+		}
+		String n = name.trim();
+		while (!n.isEmpty() && (n.charAt(0) == '.' || n.charAt(0) == '*')) {
+			n = n.substring(1);
+		}
+		return n.isEmpty() ? null : n;
+	}
+
+	/** Strips leading {@code .}/{@code *} and trailing punctuation from a name token. */
+	private static String cleanNameToken(String token) {
+		return token.replaceAll("^[.*]+", "").replaceAll("[^A-Za-z0-9_]+$", "");
+	}
 
 	private ChatEventListener() {
 	}
@@ -47,9 +92,9 @@ public final class ChatEventListener {
 				return;
 			}
 			String raw = message.getString();
-			Matcher m = VANILLA_CHAT.matcher(raw);
-			if (m.matches()) {
-				handleIncoming(m.group(1), m.group(2));
+			String[] parsed = parseSenderAndText(raw);
+			if (parsed != null) {
+				handleIncoming(parsed[0], parsed[1]);
 				return;
 			}
 			
@@ -70,8 +115,8 @@ public final class ChatEventListener {
 		// If the bot was killed by someone
 		if (rawMsg.startsWith(myName + " was slain by ") || rawMsg.startsWith(myName + " was shot by ") || rawMsg.startsWith(myName + " was fireballed by ")) {
 			String killer = rawMsg.substring(rawMsg.indexOf(" by ") + 4).split(" ")[0];
-			// Strip punctuation if any
-			killer = killer.replaceAll("[^a-zA-Z0-9_]", "");
+			// Strip Floodgate prefix + trailing punctuation, keep the name intact.
+			killer = cleanNameToken(killer);
 			if (!killer.isEmpty()) {
 				com.itdragclick.client.memory.PlayerRelationshipDB.modifyScore(killer, -30);
 				// Long-term memory: killers are remembered across sessions and
@@ -86,13 +131,13 @@ public final class ChatEventListener {
 		// If someone else died
 		if (!rawMsg.startsWith(myName)) {
 			String victim = rawMsg.split(" ")[0];
-			victim = victim.replaceAll("[^a-zA-Z0-9_]", "");
+			victim = cleanNameToken(victim);
 			// Revenge satisfied: the bot killed a hated player (< -60) —
 			// anger cools off, score rises to -40 (dislike tier, no more
 			// random idle attacks until re-provoked).
 			int byIdx = rawMsg.indexOf(" by ");
 			if (!victim.isEmpty() && byIdx >= 0) {
-				String killer = rawMsg.substring(byIdx + 4).split(" ")[0].replaceAll("[^a-zA-Z0-9_]", "");
+				String killer = cleanNameToken(rawMsg.substring(byIdx + 4).split(" ")[0]);
 				if (killer.equals(myName)
 						&& com.itdragclick.client.memory.PlayerRelationshipDB.getScore(victim) < -60) {
 					com.itdragclick.client.memory.PlayerRelationshipDB.setScore(victim, -40);
@@ -119,13 +164,14 @@ public final class ChatEventListener {
 		// If the raw text still carries a "<name> " prefix (CHAT event on some
 		// servers), strip it before prefix matching.
 		String text = rawText;
-		Matcher m = VANILLA_CHAT.matcher(text);
-		if (m.matches()) {
+		String[] leftover = parseSenderAndText(text);
+		if (leftover != null) {
 			if (senderName == null) {
-				senderName = m.group(1);
+				senderName = leftover[0];
 			}
-			text = m.group(2);
+			text = leftover[1];
 		}
+		senderName = normalizeSender(senderName);
 
 		String prefix = cfg.commandPrefix;
 		if (!text.regionMatches(true, 0, prefix, 0, prefix.length())) {
@@ -167,6 +213,7 @@ public final class ChatEventListener {
 				HarvestManager.cancel();
 				FarmManager.cancel();
 				CraftPlanner.cancel();
+				com.itdragclick.client.ai.MountManager.cancel();
 				SurvivalMonitor.clearAllOrders();
 			});
 			return;

@@ -61,7 +61,11 @@ public final class HarvestManager {
 			Map.entry("lapis_lazuli", new String[]{"lapis_ore", "deepslate_lapis_ore"}),
 			Map.entry("raw_iron", new String[]{"iron_ore", "deepslate_iron_ore"}),
 			Map.entry("raw_gold", new String[]{"gold_ore", "deepslate_gold_ore"}),
-			Map.entry("raw_copper", new String[]{"copper_ore", "deepslate_copper_ore"}));
+			Map.entry("raw_copper", new String[]{"copper_ore", "deepslate_copper_ore"}),
+			// Cobbled requests: the abundant source block is what gets mined —
+			// stone drops cobblestone, deepslate drops cobbled_deepslate.
+			Map.entry("cobblestone", new String[]{"stone", "cobblestone"}),
+			Map.entry("cobbled_deepslate", new String[]{"deepslate", "cobbled_deepslate"}));
 
 	/** Ore block -> its drop (for requests phrased as the block name). */
 	private static final Map<String, String> BLOCK_DROPS = Map.ofEntries(
@@ -72,7 +76,8 @@ public final class HarvestManager {
 			Map.entry("lapis_ore", "lapis_lazuli"), Map.entry("deepslate_lapis_ore", "lapis_lazuli"),
 			Map.entry("iron_ore", "raw_iron"), Map.entry("deepslate_iron_ore", "raw_iron"),
 			Map.entry("gold_ore", "raw_gold"), Map.entry("deepslate_gold_ore", "raw_gold"),
-			Map.entry("copper_ore", "raw_copper"), Map.entry("stone", "cobblestone"));
+			Map.entry("copper_ore", "raw_copper"),
+			Map.entry("stone", "cobblestone"), Map.entry("deepslate", "cobbled_deepslate"));
 
 	/** Drop item -> the minimum pickaxe tier needed to mine its ore. */
 	private static final Map<String, String> REQUIRED_PICKAXE = Map.of(
@@ -80,7 +85,8 @@ public final class HarvestManager {
 			"redstone", "iron_pickaxe", "raw_gold", "iron_pickaxe",
 			"raw_iron", "stone_pickaxe", "lapis_lazuli", "stone_pickaxe",
 			"raw_copper", "stone_pickaxe",
-			"coal", "wooden_pickaxe", "cobblestone", "wooden_pickaxe");
+			"coal", "wooden_pickaxe", "cobblestone", "wooden_pickaxe",
+			"cobbled_deepslate", "wooden_pickaxe");
 
 	public static String getRequiredPickaxe(String item) {
 		return REQUIRED_PICKAXE.get(item);
@@ -108,6 +114,21 @@ public final class HarvestManager {
 	private static int maxDurationTicks;
 
 	private HarvestManager() {
+	}
+
+	/**
+	 * Idle/dashboard tasks arrive with the synthetic sender "System"/"Dashboard".
+	 * Those are not players — storing them as the requester makes the delivery
+	 * phase wander around looking for a player that can't exist. Null routes
+	 * delivery to the memory chest / hold-items fallback instead.
+	 */
+	private static String realRequesterOrNull(String requestedBy) {
+		if (requestedBy == null
+				|| requestedBy.equalsIgnoreCase("System")
+				|| requestedBy.equalsIgnoreCase("Dashboard")) {
+			return null;
+		}
+		return requestedBy;
 	}
 
 	public static void register() {
@@ -153,6 +174,23 @@ public final class HarvestManager {
 			sources = new String[]{resolved};
 		}
 
+		// Silk-touch awareness: with a silk pick stone/deepslate drop
+		// themselves, flipping the cobbled routing above.
+		boolean silkPick = InventoryHelper.hasSilkTouch(bestPickaxe(mc.player));
+		if (resolved.equals("stone") || resolved.equals("deepslate")) {
+			if (silkPick) {
+				countItem = resolved;
+				sources = new String[]{resolved};
+			} else {
+				announce(mc, "No silk touch pick — you'll get " + countItem + " instead of " + resolved + "!");
+			}
+		} else if ((resolved.equals("cobblestone") || resolved.equals("cobbled_deepslate")) && silkPick) {
+			// A silk pick makes stone/deepslate drop the smooth block, so the
+			// counter would never move — only already-cobbled blocks work.
+			sources = new String[]{resolved};
+			announce(mc, "My pick has silk touch, so I can only grab already-placed " + resolved + "!");
+		}
+
 		if (preempt) {
 			AIStateManager.preemptForNewTask();
 		}
@@ -160,10 +198,28 @@ public final class HarvestManager {
 		mineBlockIds = sources;
 		huntMobName = null;
 		targetCount = quantity > 0 ? quantity : DEFAULT_BLOCK_TARGET;
-		requester = requestedBy;
+		requester = realRequesterOrNull(requestedBy);
 		chestOverride = chest;
 		maxDurationTicks = durationSeconds > 0 ? durationSeconds * 20 : 0;
 		baselineCount = InventoryHelper.countItem(mc.player, targetItemId);
+
+		// Existing stock counts toward the request: asked for 120 while
+		// holding 100 means mining 20 more, not 120. Delivery drops the whole
+		// matching stock, so the pre-owned items reach the requester too.
+		if (baselineCount >= targetCount) {
+			announce(mc, "Already have " + baselineCount + " x " + targetItemId + " on me — delivering!");
+			AIDashboardFrame.appendSystemLog("[HARVEST] Stock already covers " + targetCount
+					+ " x '" + targetItemId + "' (" + baselineCount + " in inventory) — skipping to delivery.");
+			phase = Phase.MINING;
+			phaseTicks = 0;
+			beginDelivery();
+			return;
+		}
+		if (baselineCount > 0) {
+			AIDashboardFrame.appendSystemLog("[HARVEST] " + baselineCount + " x '" + targetItemId
+					+ "' already in inventory — gathering " + (targetCount - baselineCount) + " more.");
+			targetCount -= baselineCount;
+		}
 
 		// Tool gating: no adequate pickaxe means the plan can't succeed —
 		// park this harvest on the LIFO stack and craft the tool first.
@@ -197,6 +253,24 @@ public final class HarvestManager {
 	}
 
 	/** True when the inventory holds this pickaxe tier or better. */
+	/**
+	 * The pickaxe the bot will realistically mine with: Baritone picks the
+	 * best tool, so return the highest-tier pickaxe in the inventory.
+	 */
+	private static net.minecraft.world.item.ItemStack bestPickaxe(LocalPlayer player) {
+		String[] tiers = {"netherite_pickaxe", "diamond_pickaxe", "iron_pickaxe",
+				"golden_pickaxe", "stone_pickaxe", "wooden_pickaxe"};
+		for (String tier : tiers) {
+			for (int slot = 0; slot < 36; slot++) {
+				net.minecraft.world.item.ItemStack stack = player.getInventory().getItem(slot);
+				if (InventoryHelper.itemIdOf(stack).equals(tier)) {
+					return stack;
+				}
+			}
+		}
+		return net.minecraft.world.item.ItemStack.EMPTY;
+	}
+
 	private static boolean hasPickaxeTier(LocalPlayer player, String needed) {
 		String[] atLeast = switch (needed) {
 			case "iron_pickaxe" -> new String[]{"iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"};
@@ -229,10 +303,21 @@ public final class HarvestManager {
 		huntMobName = mobName.toLowerCase(Locale.ROOT);
 		targetItemId = dropItemId;
 		targetCount = quantity > 0 ? quantity : DEFAULT_MOB_DROP_TARGET;
-		requester = requestedBy;
+		requester = realRequesterOrNull(requestedBy);
 		chestOverride = null;
 		maxDurationTicks = durationSeconds > 0 ? durationSeconds * 20 : 0;
 		baselineCount = InventoryHelper.countItem(mc.player, targetItemId);
+		// Existing stock counts toward the request (same rule as harvest).
+		if (baselineCount >= targetCount) {
+			announce(mc, "Already have " + baselineCount + " x " + targetItemId + " on me — delivering!");
+			phase = Phase.HUNTING;
+			phaseTicks = 0;
+			beginDelivery();
+			return;
+		}
+		if (baselineCount > 0) {
+			targetCount -= baselineCount;
+		}
 		phase = Phase.HUNTING;
 		phaseTicks = 0;
 		SurvivalMonitor.requestAttack(huntMobName);

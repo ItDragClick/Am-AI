@@ -1,6 +1,6 @@
 Creative Commons Attribution-NonCommercial 4.0 International Public License
 
-By exercising the Licensed Rights (defined below), You accept and agree to be bound by the terms and conditions of this Creative Commons Attribution-NonCommercial 4.0 International Public License ("Public License"). 
+By exercising the Licensed Rights (defined below), You accept and agree to be bound by the terms and conditions of this Creative Commons Attribution-NonCommercial 4.0 International Public License ("Public License").
 
 Copyright (c) 2026 [ItDragClick]
 
@@ -10,4 +10,8 @@ Under this license, others may free copy, distribute, remix, and build upon this
 2. NonCommercial (NC): This project, its source code, or any derivative works may NOT be used for commercial purposes or monetary gain.
 
 The full terms of this legal license can be read online at:
+<<<<<<< HEAD
 https://creativecommons.org
+=======
+https://creativecommons.org/licenses/by-nc/4.0/legalcode
+>>>>>>> c007c4c (Combat System Upgrade and a little bug fixes. Also add more bugs to fix.)

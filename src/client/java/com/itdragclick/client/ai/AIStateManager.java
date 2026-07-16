@@ -106,6 +106,8 @@ public final class AIStateManager {
 		CraftPlanner.cancel();
 		HarvestManager.cancel();
 		FarmManager.cancel();
+		// Combat/escort orders are tasks too — "cancel" ends them like any other.
+		SurvivalMonitor.clearAllOrders();
 		if (activeGoto != null) {
 			activeGoto = null;
 		}
@@ -119,6 +121,7 @@ public final class AIStateManager {
 	 * paused context and resumes it.
 	 */
 	public static void taskCompleted() {
+		AIStats.taskCompleted();
 		if (stack.isEmpty()) {
 			return;
 		}
@@ -149,7 +152,8 @@ public final class AIStateManager {
 	}
 
 	public static boolean anythingActive() {
-		return activeGoto != null || HarvestManager.isBusy() || FarmManager.isBusy() || CraftPlanner.isBusy();
+		return activeGoto != null || HarvestManager.isBusy() || FarmManager.isBusy() || CraftPlanner.isBusy()
+				|| SurvivalMonitor.hasAttackOrder() || SurvivalMonitor.hasFollowOrder();
 	}
 
 	public static String getActiveTaskDescription() {
@@ -164,6 +168,10 @@ public final class AIStateManager {
 		}
 		if (CraftPlanner.isBusy()) {
 			return CraftPlanner.getCurrentTaskDescription();
+		}
+		String order = SurvivalMonitor.getOrderDescription();
+		if (order != null) {
+			return order;
 		}
 		return "IDLE - No tasks running.";
 	}

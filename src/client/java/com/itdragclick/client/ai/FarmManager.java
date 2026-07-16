@@ -4,46 +4,27 @@ import com.itdragclick.client.ui.AIDashboardFrame;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.commands.arguments.EntityAnchorArgument;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.CropBlock;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.Vec3;
-
-import java.util.Map;
 
 /**
- * "#farm" agricultural module (main thread, tick-driven). Scans an 18-block
- * horizontal radius for mature crops, walks to each (Baritone), breaks it
- * (crops are instant-break), and replants the matching seed on the vacated
- * farmland. Repeats until no mature crops remain in the area.
+ * "#farm" agricultural module — thin wrapper around Baritone's native farm
+ * process (harvest + replant, all crop types Baritone knows). This class only
+ * tracks the task lifecycle: start/cancel, the optional time limit, combat
+ * pauses (SurvivalMonitor's pauseForCombat cancels every Baritone process, so
+ * the farm is re-issued when the fight ends), and completion detection.
  */
 public final class FarmManager {
 
-	/** Crop block id -> the seed item that replants it. */
-	private static final Map<String, String> CROP_SEEDS = Map.of(
-			"wheat", "wheat_seeds",
-			"carrots", "carrot",
-			"potatoes", "potato",
-			"beetroots", "beetroot_seeds");
-
-	private static final int SCAN_RADIUS = 18;
-	private static final int SCAN_VERTICAL = 6;
-	private static final double WORK_REACH = 4.0;
-	private static final int STUCK_TIMEOUT_TICKS = 400;
+	/** 0 = Baritone default (unlimited range around the start point). */
+	private static final int FARM_RANGE = 0;
+	/** Ticks after (re)issuing farm() before "process inactive" means "done". */
+	private static final int START_GRACE_TICKS = 40;
 
 	private static boolean active = false;
-	private static BlockPos currentCrop;
-	private static int cropTicks;
-	private static int harvested;
 	private static int maxDurationTicks;
 	private static int activeTicks;
+	private static int graceTicks;
+	/** Set while combat has the farm process cancelled; re-issue on exit. */
+	private static boolean pausedForCombat = false;
 
 	private FarmManager() {
 	}
@@ -58,7 +39,7 @@ public final class FarmManager {
 
 	public static String getCurrentTaskDescription() {
 		if (!active) return "IDLE";
-		return "FARMING (" + harvested + " crops harvested)";
+		return "FARMING (Baritone farm process)";
 	}
 
 	public static void start(boolean preempt, int durationSeconds) {
@@ -66,19 +47,20 @@ public final class FarmManager {
 			AIStateManager.preemptForNewTask();
 		}
 		active = true;
-		currentCrop = null;
-		harvested = 0;
 		activeTicks = 0;
+		graceTicks = START_GRACE_TICKS;
+		pausedForCombat = false;
 		maxDurationTicks = durationSeconds > 0 ? durationSeconds * 20 : 0;
-		AIDashboardFrame.appendSystemLog("[FARM] Crop scan started (radius " + SCAN_RADIUS + ").");
+		BaritoneBridge.startFarm(FARM_RANGE);
 	}
 
 	public static void cancel() {
 		if (active) {
 			AIDashboardFrame.appendSystemLog("[FARM] Farming cancelled.");
+			BaritoneBridge.stopQuietly();
 		}
 		active = false;
-		currentCrop = null;
+		pausedForCombat = false;
 	}
 
 	/** LIFO stack integration. */
@@ -86,11 +68,11 @@ public final class FarmManager {
 		if (!active) {
 			return null;
 		}
+		int remaining = maxDurationTicks > 0 ? Math.max(0, (maxDurationTicks - activeTicks) / 20) : 0;
 		cancel();
-		BaritoneBridge.stopQuietly();
 		AIStateManager.TaskContext ctx = new AIStateManager.TaskContext();
 		ctx.type = AIStateManager.TaskContext.Type.FARM;
-		ctx.durationSeconds = maxDurationTicks > 0 ? Math.max(0, (maxDurationTicks - activeTicks) / 20) : 0;
+		ctx.durationSeconds = remaining;
 		return ctx;
 	}
 
@@ -99,103 +81,40 @@ public final class FarmManager {
 		if (!active || player == null || mc.level == null) {
 			return;
 		}
+		// Combat pause: pauseForCombat cancelled the farm process along with
+		// everything else. Hold state (including the clock) and re-issue the
+		// farm once the fight is over.
+		if (SurvivalMonitor.isInCombat()) {
+			pausedForCombat = true;
+			return;
+		}
+		if (pausedForCombat) {
+			pausedForCombat = false;
+			graceTicks = START_GRACE_TICKS;
+			BaritoneBridge.startFarm(FARM_RANGE);
+			AIDashboardFrame.appendSystemLog("[FARM] Fight over — farm process re-issued.");
+			return;
+		}
 		activeTicks++;
 		if (maxDurationTicks > 0 && activeTicks >= maxDurationTicks) {
 			AIDashboardFrame.appendSystemLog("[FARM] Time limit reached.");
-			announce(mc, "Farm time's up! Harvested " + harvested + " crops.");
+			announce(mc, "Farm time's up!");
+			BaritoneBridge.stopQuietly();
 			active = false;
 			AIStateManager.taskCompleted();
 			return;
 		}
-
-		if (currentCrop == null) {
-			currentCrop = findMatureCrop(mc, player);
-			cropTicks = 0;
-			if (currentCrop == null) {
-				AIDashboardFrame.appendSystemLog("[FARM] Area handled — " + harvested + " crop(s) harvested and replanted.");
-				announce(mc, "Farm's all tidy! Harvested " + harvested + " crops.");
-				active = false;
-				AIStateManager.taskCompleted();
-				return;
-			}
-			BaritoneBridge.goTo(currentCrop.getX(), currentCrop.getY(), currentCrop.getZ());
+		if (graceTicks > 0) {
+			graceTicks--;
 			return;
 		}
-
-		if (++cropTicks > STUCK_TIMEOUT_TICKS) {
-			AIDashboardFrame.appendSystemLog("[FARM] Couldn't reach crop at " + currentCrop.toShortString() + " — skipping.");
-			currentCrop = null;
-			return;
+		// The farm process went idle on its own: area fully handled.
+		if (!BaritoneBridge.isFarmProcessActive()) {
+			AIDashboardFrame.appendSystemLog("[FARM] Farm process finished — area handled.");
+			announce(mc, "Farm's all tidy!");
+			active = false;
+			AIStateManager.taskCompleted();
 		}
-
-		BlockState state = mc.level.getBlockState(currentCrop);
-		if (!(state.getBlock() instanceof CropBlock crop) || !crop.isMaxAge(state)) {
-			currentCrop = null; // broken/regressed meanwhile
-			return;
-		}
-		if (!currentCrop.closerToCenterThan(player.position(), WORK_REACH)) {
-			return; // Baritone still travelling
-		}
-
-		// In reach: break the crop (instant), replant, move on.
-		BaritoneBridge.stopQuietly();
-		String cropId = BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
-		player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(currentCrop));
-		mc.gameMode.destroyBlock(currentCrop);
-		replant(mc, player, currentCrop, CROP_SEEDS.get(cropId));
-		harvested++;
-		currentCrop = null;
-	}
-
-	/** Look down and plant the seed back onto the vacated farmland block. */
-	private static void replant(Minecraft mc, LocalPlayer player, BlockPos cropPos, String seedId) {
-		if (seedId == null) {
-			return;
-		}
-		int seedSlot = -1;
-		for (int slot = 0; slot < 36; slot++) {
-			ItemStack stack = player.getInventory().getItem(slot);
-			if (!stack.isEmpty() && InventoryHelper.itemIdOf(stack).equals(seedId)) {
-				seedSlot = slot;
-				break;
-			}
-		}
-		if (seedSlot < 0) {
-			return; // out of seeds — leave the plot empty
-		}
-		int hotbar = seedSlot < 9 ? seedSlot : InventoryHelper.FOOD_HOTBAR_SLOT;
-		if (seedSlot >= 9) {
-			InventoryHelper.swapIntoHotbar(mc, player, seedSlot, hotbar);
-		}
-		player.getInventory().setSelectedSlot(hotbar);
-		BlockPos farmland = cropPos.below();
-		player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(farmland));
-		BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(farmland), Direction.UP, farmland, false);
-		mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit);
-	}
-
-	private static BlockPos findMatureCrop(Minecraft mc, LocalPlayer player) {
-		BlockPos center = player.blockPosition();
-		BlockPos nearest = null;
-		double nearestDistSq = Double.MAX_VALUE;
-		for (BlockPos pos : BlockPos.betweenClosed(
-				center.offset(-SCAN_RADIUS, -SCAN_VERTICAL, -SCAN_RADIUS),
-				center.offset(SCAN_RADIUS, SCAN_VERTICAL, SCAN_RADIUS))) {
-			BlockState state = mc.level.getBlockState(pos);
-			Block block = state.getBlock();
-			if (!(block instanceof CropBlock crop) || !crop.isMaxAge(state)) {
-				continue;
-			}
-			if (!CROP_SEEDS.containsKey(BuiltInRegistries.BLOCK.getKey(block).getPath())) {
-				continue;
-			}
-			double distSq = pos.distSqr(center);
-			if (distSq < nearestDistSq) {
-				nearestDistSq = distSq;
-				nearest = pos.immutable();
-			}
-		}
-		return nearest;
 	}
 
 	private static void announce(Minecraft mc, String message) {

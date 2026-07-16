@@ -138,6 +138,60 @@ public final class BaritoneBridge {
 		}
 	}
 
+	/**
+	 * Starts Baritone's native farm process (harvest + replant, the engine
+	 * behind "#farm"). range 0 = Baritone default (unlimited around start).
+	 */
+	public static void startFarm(int range) {
+		if (!checkPresent("farm")) {
+			return;
+		}
+		try {
+			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			BaritoneAPI.getSettings().allowBreak.value = true;
+			BaritoneAPI.getSettings().allowPlace.value = true;
+			baritone.getFarmProcess().farm(range, null);
+			AIDashboardFrame.appendSystemLog("[BARITONE] Farm process started (range "
+					+ (range <= 0 ? "unlimited" : String.valueOf(range)) + ").");
+		} catch (LinkageError e) {
+			reportObfuscatedJar("farm", e);
+		}
+	}
+
+	/** True while Baritone's farm process is running. */
+	public static boolean isFarmProcessActive() {
+		if (!BARITONE_PRESENT) {
+			return false;
+		}
+		try {
+			return BaritoneAPI.getProvider().getPrimaryBaritone().getFarmProcess().isActive();
+		} catch (LinkageError e) {
+			return false;
+		}
+	}
+
+	/**
+	 * True while ANY Baritone activity is live: an actual path being walked,
+	 * the farm or follow process, or a combat-paused goal still waiting to be
+	 * resumed. The auto-sleep gate uses this — a bot with live pathing work
+	 * is not "idle" no matter what the task managers say.
+	 */
+	public static boolean isAnyProcessActive() {
+		if (!BARITONE_PRESENT) {
+			return rememberedGoal != null;
+		}
+		try {
+			IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+			return rememberedGoal != null
+					|| baritone.getPathingBehavior().isPathing()
+					|| baritone.getPathingBehavior().hasPath()
+					|| baritone.getFarmProcess().isActive()
+					|| baritone.getFollowProcess().isActive();
+		} catch (LinkageError e) {
+			return rememberedGoal != null;
+		}
+	}
+
 	/** Continuously trails the named player via Baritone's FollowProcess. */
 	public static void follow(String playerName) {
 		String targetPlayer = playerName.trim();

@@ -27,7 +27,8 @@ public final class AIActionBridge {
 			"goto", "mine", "mine_area", "follow", "follow_protect", "attack", "eat",
 			"drop_items", "deposit_chest", "farm", "sneak", "unsneak", "click_respawn",
 			"cancel", "stop", "equip", "sleep", "leave_bed", "craft",
-			"turn", "walk", "break", "place", "equip_offhand", "unequip");
+			"turn", "walk", "break", "place", "equip_offhand", "unequip",
+			"mount", "dismount");
 
 	/** Verbs small models substitute for "attack" when told to kill things. */
 	private static final java.util.Set<String> ATTACK_ALIASES = java.util.Set.of(
@@ -57,6 +58,9 @@ public final class AIActionBridge {
 
 		if (ATTACK_ALIASES.contains(verb)) {
 			verb = "attack";
+		}
+		if (verb.equals("unmount") || verb.equals("ride")) {
+			verb = verb.equals("ride") ? "mount" : "dismount";
 		}
 
 		// Fused hallucinations like "mine_pigs" / "kill_cow": any
@@ -167,6 +171,13 @@ public final class AIActionBridge {
 			}
 		}
 
+		// Baritone can't path a vehicle: any movement task gets off the ride first.
+		switch (verb) {
+			case "goto", "mine", "mine_area", "follow", "follow_protect", "farm" -> MountManager.dismountIfRiding();
+			default -> {
+			}
+		}
+
 		switch (verb) {
 			case "goto" -> {
 				// Coordinates can arrive inline, in chest_coords, or in the
@@ -263,6 +274,10 @@ public final class AIActionBridge {
 			case "sneak" -> setSneaking(true);
 			case "unsneak" -> setSneaking(false);
 			case "eat" -> SurvivalMonitor.requestEat();
+			// No cleanTarget here: an empty mount target means "nearest ride",
+			// not the requesting player's name.
+			case "mount" -> MountManager.startMount(argOr(tokens, decision.target()));
+			case "dismount" -> MountManager.startDismount(null);
 			case "craft" -> {
 				String raw = argOr(tokens, decision.target());
 				if (raw == null) {
@@ -328,6 +343,7 @@ public final class AIActionBridge {
 				HarvestManager.cancel();
 				FarmManager.cancel();
 				CraftPlanner.cancel();
+				MountManager.cancel();
 				SurvivalMonitor.clearAllOrders();
 				BaritoneBridge.hardStop();
 			}
